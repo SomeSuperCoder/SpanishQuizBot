@@ -1,6 +1,13 @@
 import json
+import logging
+
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from aiogram.fsm.context import FSMContext
 
 from bot.database.repository import UserRepository, SurveyRepository
@@ -15,37 +22,25 @@ from bot.services.ai_service import AIService, AIServiceError, Quiz
 
 router = Router()
 ai = AIService()
+logger = logging.getLogger(__name__)
 
 
-def _quiz_preview(quiz: Quiz) -> str:
-    """Format a quiz for preview."""
-    lines = [f"📊 {quiz.question}\n"]
-    labels = ["🅰️", "🅱️", "🅲", "🅳"]
-    for i, opt in enumerate(quiz.options):
-        marker = "✅" if i == quiz.correct_index else "  "
-        lines.append(f"{labels[i]}  {opt}  {marker}")
-    return "\n".join(lines)
+# ── helpers ─────────────────────────────────────────────────
 
 
-def _quiz_publish_text(quiz: Quiz) -> str:
-    """Format a quiz for the channel (no correct answer shown)."""
-    labels = ["🅰️", "🅱️", "🅲", "🅳"]
-    lines = [f"📊 {quiz.question}\n"]
-    for i, opt in enumerate(quiz.options):
-        lines.append(f"{labels[i]}  {opt}")
-    return "\n".join(lines)
+async def _send_quiz_preview(target, quiz: Quiz, bot) -> Message:
+    """Send a real Telegram quiz poll. Returns the poll message."""
+    return await bot.send_poll(
+        chat_id=target,
+        question=quiz.question,
+        options=[{"text": opt} for opt in quiz.options],
+        type="quiz",
+        correct_option_id=quiz.correct_index,
+        is_anonymous=False,
+    )
 
 
-def _vote_keyboard(quiz: Quiz, survey_id: int) -> InlineKeyboardMarkup:
-    """Inline keyboard for voting in the channel."""
-    labels = ["🅰️", "🅱️", "🅲", "🅳"]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=f"{labels[i]}  {opt}",
-            callback_data=f"vote:{survey_id}:{i}",
-        )]
-        for i, opt in enumerate(quiz.options)
-    ])
+# ── handlers ───────────────────────────────────────────────
 
 
 @router.callback_query(F.data == "create_survey")
@@ -62,7 +57,7 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
 
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic → AI generates quiz automatically."""
+    """Receive topic → AI generates quiz → send REAL poll as preview."""
     topic = message.text.strip()
     await state.update_data(topic=topic)
     await state.set_state(SurveyCreation.generating)
@@ -78,7 +73,7 @@ async def handle_topic(message: Message, state: FSMContext):
         )
         await state.clear()
         return
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error generating quiz")
         await loading_msg.edit_text(
             "❌ Error inesperado al generar el quiz. Intenta de nuevo.",
@@ -104,24 +99,23 @@ async def handle_topic(message: Message, state: FSMContext):
     )
     await state.set_state(SurveyCreation.reviewing)
 
-    preview = _quiz_preview(quiz)
-    await loading_msg.edit_text(preview, reply_markup=get_survey_review_keyboard())
+    # Delete the "Generando..." message, then send the REAL poll
+    await loading_msg.delete()
+    await _send_quiz_preview(message.chat.id, quiz, message.bot)
+
+    # Follow up with action buttons
+    await message.answer(
+        "👆 Esta es la vista previa del quiz.\n\n¿Qué quieres hacer?",
+        reply_markup=get_survey_review_keyboard(),
+    )
 
 
 @router.callback_query(SurveyCreation.reviewing, F.data == "survey_approve")
 async def handle_approve(callback_query: CallbackQuery, state: FSMContext):
-    """User approved the quiz — show publish confirmation."""
-    data = await state.get_data()
-    quiz = Quiz(
-        question=data["quiz_question"],
-        options=data["quiz_options"],
-        correct_index=data["quiz_correct"],
-    )
-
+    """User approved — show publish confirmation."""
     await state.set_state(SurveyCreation.confirming)
     await callback_query.message.edit_text(
-        f"✅ ¡Quiz aprobado!\n\n{_quiz_preview(quiz)}\n\n"
-        "¿Qué deseas hacer?",
+        "✅ ¡Quiz aprobado!\n\n¿Qué deseas hacer?",
         reply_markup=get_confirm_keyboard(),
     )
     await callback_query.answer()
@@ -132,8 +126,7 @@ async def handle_improve(callback_query: CallbackQuery, state: FSMContext):
     """User wants to improve — ask for feedback."""
     await state.set_state(SurveyCreation.waiting_improvement)
     await callback_query.message.edit_text(
-        "✏️ Cuéntame qué quieres mejorar.\n\n"
-        "¿Qué cambios necesitas?",
+        "✏️ Cuéntame qué quieres mejorar.\n\n¿Qué cambios necesitas?",
         reply_markup=get_cancel_keyboard(),
     )
     await callback_query.answer()
@@ -141,7 +134,7 @@ async def handle_improve(callback_query: CallbackQuery, state: FSMContext):
 
 @router.message(SurveyCreation.waiting_improvement)
 async def handle_improvement(message: Message, state: FSMContext):
-    """Receive feedback → regenerate quiz."""
+    """Receive feedback → regenerate quiz → send NEW poll as preview."""
     feedback = message.text.strip()
     data = await state.get_data()
     topic = data["topic"]
@@ -180,13 +173,19 @@ async def handle_improvement(message: Message, state: FSMContext):
     )
     await state.set_state(SurveyCreation.reviewing)
 
-    preview = _quiz_preview(quiz)
-    await loading_msg.edit_text(preview, reply_markup=get_survey_review_keyboard())
+    # Delete "Regenerando..." and send the NEW quiz poll
+    await loading_msg.delete()
+    await _send_quiz_preview(message.chat.id, quiz, message.bot)
+
+    await message.answer(
+        "👆 Nueva versión del quiz.\n\n¿Qué quieres hacer?",
+        reply_markup=get_survey_review_keyboard(),
+    )
 
 
 @router.callback_query(SurveyCreation.confirming, F.data == "survey_publish")
 async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
-    """Publish quiz to the connected channel."""
+    """Publish quiz as a REAL poll to the connected channel."""
     data = await state.get_data()
     survey_id = data["survey_id"]
     topic = data["topic"]
@@ -213,12 +212,15 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
         return
 
     channel_id = user["channel_id"]
-    text = _quiz_publish_text(quiz)
-    kb = _vote_keyboard(quiz, survey_id)
 
     try:
-        sent = await callback_query.bot.send_message(
-            chat_id=channel_id, text=text, reply_markup=kb,
+        sent = await callback_query.bot.send_poll(
+            chat_id=channel_id,
+            question=quiz.question,
+            options=[{"text": opt} for opt in quiz.options],
+            type="quiz",
+            correct_option_id=quiz.correct_index,
+            is_anonymous=False,
         )
         await SurveyRepository.update(
             survey_id,
