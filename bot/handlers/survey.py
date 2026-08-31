@@ -220,7 +220,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             options=[{"text": opt} for opt in quiz.options],
             type="quiz",
             correct_option_id=quiz.correct_index,
-            is_anonymous=False,
+            is_anonymous=True,  # channels require anonymous polls
         )
         await SurveyRepository.update(
             survey_id,
