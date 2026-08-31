@@ -12,8 +12,6 @@ async def init_db():
                 telegram_id INTEGER UNIQUE NOT NULL,
                 username TEXT,
                 first_name TEXT,
-                channel_id INTEGER,
-                channel_title TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -32,6 +30,12 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         """)
         await db.commit()

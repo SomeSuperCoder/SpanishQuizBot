@@ -25,16 +25,35 @@ class UserRepository:
             )
             return dict(await cursor.fetchone())
 
+
+class BotConfigRepository:
     @staticmethod
-    async def update_channel(telegram_id: int, channel_id: int, channel_title: str):
+    async def get(key: str) -> str | None:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                "SELECT value FROM bot_config WHERE key = ?", (key,)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    @staticmethod
+    async def set(key: str, value: str):
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute(
-                "INSERT INTO users (telegram_id, username, first_name, channel_id, channel_title) "
-                "VALUES (?, '', '', ?, ?) "
-                "ON CONFLICT(telegram_id) DO UPDATE SET channel_id = ?, channel_title = ?",
-                (telegram_id, channel_id, channel_title, channel_id, channel_title),
+                "INSERT INTO bot_config (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = ?",
+                (key, value, value),
             )
             await db.commit()
+
+    @staticmethod
+    async def get_channel_id() -> int | None:
+        val = await BotConfigRepository.get("channel_id")
+        return int(val) if val else None
+
+    @staticmethod
+    async def get_channel_title() -> str | None:
+        return await BotConfigRepository.get("channel_title")
 
 
 class SurveyRepository:

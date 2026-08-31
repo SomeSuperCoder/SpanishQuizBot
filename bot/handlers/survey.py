@@ -10,7 +10,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 
-from bot.database.repository import UserRepository, SurveyRepository
+from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
     get_survey_review_keyboard,
     get_confirm_keyboard,
@@ -185,7 +185,7 @@ async def handle_improvement(message: Message, state: FSMContext):
 
 @router.callback_query(SurveyCreation.confirming, F.data == "survey_publish")
 async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
-    """Publish quiz as a REAL poll to the connected channel."""
+    """Publish quiz as a REAL poll to the global channel."""
     data = await state.get_data()
     survey_id = data["survey_id"]
     topic = data["topic"]
@@ -195,23 +195,18 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
         correct_index=data["quiz_correct"],
     )
 
-    user = await UserRepository.get_or_create(
-        callback_query.from_user.id,
-        callback_query.from_user.username or "",
-        callback_query.from_user.first_name or "",
-    )
+    channel_id = await BotConfigRepository.get_channel_id()
+    channel_title = await BotConfigRepository.get_channel_title()
 
-    if not user.get("channel_id"):
+    if not channel_id:
         await callback_query.message.edit_text(
-            "⚠️ No tienes un canal conectado.\n\n"
-            "Añade el bot a tu canal primero y luego vuelve a intentar.",
+            "⚠️ No hay canal configurado.\n\n"
+            "Un administrador debe añadir el bot a un canal primero.",
             reply_markup=get_start_keyboard(),
         )
         await state.clear()
         await callback_query.answer()
         return
-
-    channel_id = user["channel_id"]
 
     try:
         sent = await callback_query.bot.send_poll(
@@ -230,7 +225,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
         )
         await callback_query.message.edit_text(
             f"🚀 ¡Quiz publicado!\n\n"
-            f"📍 Canal: {user.get('channel_title', 'desconocido')}\n"
+            f"📍 Canal: {channel_title or channel_id}\n"
             f"📊 Tema: {topic}",
             reply_markup=get_start_keyboard(),
         )
