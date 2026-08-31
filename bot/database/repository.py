@@ -29,8 +29,10 @@ class UserRepository:
     async def update_channel(telegram_id: int, channel_id: int, channel_title: str):
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute(
-                "UPDATE users SET channel_id = ?, channel_title = ? WHERE telegram_id = ?",
-                (channel_id, channel_title, telegram_id)
+                "INSERT INTO users (telegram_id, username, first_name, channel_id, channel_title) "
+                "VALUES (?, '', '', ?, ?) "
+                "ON CONFLICT(telegram_id) DO UPDATE SET channel_id = ?, channel_title = ?",
+                (telegram_id, channel_id, channel_title, channel_id, channel_title),
             )
             await db.commit()
 
