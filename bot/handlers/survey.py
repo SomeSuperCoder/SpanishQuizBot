@@ -61,15 +61,16 @@ async def _show_thinking(bot, chat_id: int, draft_id: int, emoji_id: str, fallba
 
 
 async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
-    """Dismiss the thinking draft by replacing it with a final message."""
+    """Dismiss the thinking draft by replacing it with a temporary message, then deleting it."""
     try:
-        await bot(SendRichMessage(
+        msg = await bot(SendRichMessage(
             chat_id=chat_id,
             draft_id=draft_id,
             rich_message=InputRichMessage(
-                blocks=[InputRichBlockParagraph(text="✅ Listo")]
+                blocks=[InputRichBlockParagraph(text=" ")]
             ),
         ))
+        await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
     except Exception:
         pass  # private chat only; fail silently
 logger = logging.getLogger(__name__)
