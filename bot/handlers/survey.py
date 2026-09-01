@@ -35,10 +35,20 @@ ai = AIService()
 
 # ── Thinking draft helpers (AIActions emoji pack) ───────────
 
-_EMOJI_GENERATE = "5573473356579078196"
-_EMOJI_REVIEW = "5534951812081123354"
+_EMOJI_GENERATE = "5534951812081123354"
+_EMOJI_REVIEW = "5537581341383589905"
 _EMOJI_FIX = "5537581341383589905"
 _EMOJI_ANALYZE = "5537581341383589905"  # reuse fix emoji for analysis
+
+# Level emoji (1-6 → A1-C2)
+_LEVEL_EMOJI = {
+    "A1": ("5217450769950737137", "1️⃣"),
+    "A2": ("5215574152710229930", "2️⃣"),
+    "B1": ("5215514710362855140", "3️⃣"),
+    "B2": ("5215227312626241463", "4️⃣"),
+    "C1": ("5217601248424925577", "5️⃣"),
+    "C2": ("5215366641365322506", "6️⃣"),
+}
 
 
 def _ce(custom_id: str, fallback: str) -> RichTextCustomEmoji:
@@ -82,18 +92,20 @@ COUNTER_MAX = 3
 
 
 def _prefixed_question(quiz: Quiz, level: str) -> str:
-    """Add [level] prefix to quiz question."""
-    return f"[{level}] {quiz.question}"
+    """Add level emoji prefix to quiz question for polls (HTML format)."""
+    emoji_id, fallback = _LEVEL_EMOJI.get(level, ("0", "❓"))
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji> {quiz.question}'
 
 
 async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
-    """Send a real Telegram quiz poll with [level] prefix."""
+    """Send a real Telegram quiz poll with level emoji prefix."""
     # Telegram allows max 10 options per poll
     options = quiz.options[:10]
     correct = min(quiz.correct_index, len(options) - 1)
     await bot.send_poll(
         chat_id=target,
         question=_prefixed_question(quiz, level),
+        question_parse_mode="HTML",
         options=[{"text": opt} for opt in options],
         type="quiz",
         correct_option_id=correct,
@@ -320,6 +332,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
         f"{summary}{review_note}\n\n¿Qué quieres hacer?",
         reply_markup=get_review_keyboard(),
+        parse_mode="HTML",
     )
 
 
@@ -848,6 +861,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             await callback_query.bot.send_poll(
                 chat_id=channel_id,
                 question=_prefixed_question(quiz, level),
+                question_parse_mode="HTML",
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
                 correct_option_id=quiz.correct_index,
@@ -971,6 +985,7 @@ async def _run_scheduled_publish(
             await bot.send_poll(
                 chat_id=channel_id,
                 question=_prefixed_question(quiz, level),
+                question_parse_mode="HTML",
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
                 correct_option_id=quiz.correct_index,
@@ -1084,6 +1099,7 @@ async def handle_improvement(message: Message, state: FSMContext):
         f"👆 Quiz #{editing_id} actualizado.\n\n"
         f"{summary}\n\n¿Qué quieres hacer?",
         reply_markup=get_edit_done_keyboard(),
+        parse_mode="HTML",
     )
 
 
