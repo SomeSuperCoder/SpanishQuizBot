@@ -8,7 +8,8 @@ from aiogram.fsm.context import FSMContext
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
     get_start_keyboard,
-    get_counter_keyboard,
+    get_category_counter_keyboard,
+    CATEGORIES,
     get_level_keyboard,
     get_dialect_keyboard,
     get_review_keyboard,
@@ -54,26 +55,41 @@ def _build_summary(quizzes: list[Quiz], level: str) -> str:
     return "\n".join(lines)
 
 
-def _get_counter_text(data: dict) -> str:
-    """Build the counter display text."""
-    n_es = data.get("count_espanol", 0)
-    n_ru = data.get("count_ruso", 0)
+def _get_counter_es_text(data: dict) -> str:
+    """Build the Spanish category counter display text."""
     topic = data.get("topic", "")
+    counts = data.get("counts_es", {})
+    total = sum(counts.values())
     return (
         f"📊 Tema: *{topic}*\n\n"
-        f"¿Cuántas encuestas quieres crear?\n"
-        f"🇪🇸 Cuestion en español: *{n_es}*\n"
-        f"🇷🇺 Cuestion en ruso: *{n_ru}*\n\n"
+        f"🇪🇸 *Categorías en español* (total: *{total}*)\n\n"
         f"Usa las flechas para ajustar:"
     )
 
 
-def _build_counters(data: dict) -> dict[str, tuple[str, int]]:
-    """Build counter dict from FSM data."""
-    return {
-        "espanol": ("🇪🇸", data.get("count_espanol", 0)),
-        "ruso": ("🇷🇺", data.get("count_ruso", 0)),
-    }
+def _get_counter_ru_text(data: dict) -> str:
+    """Build the Russian category counter display text."""
+    topic = data.get("topic", "")
+    counts_es = data.get("counts_es", {})
+    total_es = sum(counts_es.values())
+    counts_ru = data.get("counts_ru", {})
+    total_ru = sum(counts_ru.values())
+    return (
+        f"📊 Tema: *{topic}*\n"
+        f"📝 Total español: *{total_es}*\n\n"
+        f"🇷🇺 *Categorías en ruso* (total: *{total_ru}*)\n\n"
+        f"Usa las flechas para ajustar:"
+    )
+
+
+def _get_counts(data: dict, lang: str) -> dict[str, int]:
+    """Get category counts from FSM data."""
+    return data.get(f"counts_{lang}", {c["key"]: 0 for c in CATEGORIES})
+
+
+def _get_total(data: dict, lang: str) -> int:
+    """Get total quizzes for a language."""
+    return sum(_get_counts(data, lang).values())
 
 
 # ── /start & create ─────────────────────────────────────────
@@ -91,45 +107,97 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     await callback_query.answer()
 
 
-# ── topic → counter ─────────────────────────────────────────
+# ── topic → counter_es ──────────────────────────────────────
 
 
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic → show counter UI."""
+    """Receive topic → show Spanish category counters."""
     topic = message.text.strip()
-    await state.update_data(topic=topic, count_espanol=0, count_ruso=0)
-    await state.set_state(SurveyCreation.waiting_counter)
+    zero_counts = {c["key"]: 0 for c in CATEGORIES}
+    await state.update_data(topic=topic, counts_es=zero_counts, counts_ru=zero_counts)
+    await state.set_state(SurveyCreation.waiting_counter_es)
 
+    data = await state.get_data()
     await message.answer(
-        _get_counter_text(await state.get_data()),
-        reply_markup=get_counter_keyboard(_build_counters(await state.get_data())),
+        _get_counter_es_text(data),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
         parse_mode="Markdown",
     )
 
 
-# ── counter: increment / decrement / confirm ────────────────
+# ── counter_es: Spanish categories ──────────────────────────
 
 
-@router.callback_query(SurveyCreation.waiting_counter, F.data.startswith("counter:"))
-async def handle_counter(callback_query: CallbackQuery, state: FSMContext):
-    """Handle counter button press."""
+@router.callback_query(SurveyCreation.waiting_counter_es, F.data.startswith("counter:"))
+async def handle_counter_es(callback_query: CallbackQuery, state: FSMContext):
+    """Handle Spanish category counter press."""
     parts = callback_query.data.split(":")
 
-    # counter:ok — confirm
+    # counter:ok — confirm → move to Russian
     if len(parts) == 2 and parts[1] == "ok":
         data = await state.get_data()
-        n_es = data.get("count_espanol", 0)
-        n_ru = data.get("count_ruso", 0)
+        total_es = _get_total(data, "es")
 
-        if n_es + n_ru < 1:
-            await callback_query.answer("⚠️ Necesitas al menos 1 quiz", show_alert=True)
+        if total_es < 1:
+            await callback_query.answer("⚠️ Necesitas al menos 1 quiz en español", show_alert=True)
+            return
+
+        await state.set_state(SurveyCreation.waiting_counter_ru)
+        await callback_query.message.edit_text(
+            _get_counter_ru_text(data),
+            reply_markup=get_category_counter_keyboard(_get_counts(data, "ru")),
+            parse_mode="Markdown",
+        )
+        await callback_query.answer()
+        return
+
+    # counter:key:+/-  (3 parts)
+    action = parts[2]
+    key = parts[1]
+
+    data = await state.get_data()
+    counts = _get_counts(data, "es")
+    current = counts.get(key, 0)
+
+    if action == "+":
+        counts[key] = min(current + 1, COUNTER_MAX)
+    elif action == "-":
+        counts[key] = max(current - 1, 0)
+
+    await state.update_data(counts_es=counts)
+    data = await state.get_data()
+
+    await callback_query.message.edit_text(
+        _get_counter_es_text(data),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+# ── counter_ru: Russian categories ──────────────────────────
+
+
+@router.callback_query(SurveyCreation.waiting_counter_ru, F.data.startswith("counter:"))
+async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
+    """Handle Russian category counter press."""
+    parts = callback_query.data.split(":")
+
+    # counter:ok — confirm → move to level
+    if len(parts) == 2 and parts[1] == "ok":
+        data = await state.get_data()
+        total_es = _get_total(data, "es")
+        total_ru = _get_total(data, "ru")
+
+        if total_ru < 1:
+            await callback_query.answer("⚠️ Necesitas al menos 1 quiz en ruso", show_alert=True)
             return
 
         await state.set_state(SurveyCreation.waiting_level)
         await callback_query.message.edit_text(
             f"📊 Tema: *{data['topic']}*\n"
-            f"📝 Quizzes: *{n_es}* en español, *{n_ru}* en ruso\n\n"
+            f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n\n"
             "¿Qué nivel?",
             reply_markup=get_level_keyboard(),
             parse_mode="Markdown",
@@ -142,19 +210,20 @@ async def handle_counter(callback_query: CallbackQuery, state: FSMContext):
     key = parts[1]
 
     data = await state.get_data()
-    current = data.get(f"count_{key}", 0)
+    counts = _get_counts(data, "ru")
+    current = counts.get(key, 0)
 
     if action == "+":
-        current = min(current + 1, COUNTER_MAX)
+        counts[key] = min(current + 1, COUNTER_MAX)
     elif action == "-":
-        current = max(current - 1, 0)
+        counts[key] = max(current - 1, 0)
 
-    await state.update_data(**{f"count_{key}": current})
+    await state.update_data(counts_ru=counts)
     data = await state.get_data()
 
     await callback_query.message.edit_text(
-        _get_counter_text(data),
-        reply_markup=get_counter_keyboard(_build_counters(data)),
+        _get_counter_ru_text(data),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "ru")),
         parse_mode="Markdown",
     )
     await callback_query.answer()
@@ -170,9 +239,13 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
     await state.update_data(level=level)
     await state.set_state(SurveyCreation.waiting_dialect)
 
+    data = await state.get_data()
+    total_es = _get_total(data, "es")
+    total_ru = _get_total(data, "ru")
+
     await callback_query.message.edit_text(
-        f"📊 Tema: *{callback_query.message.text.split(chr(10))[0].replace('📊 Tema: ', '').replace('*', '')}*\n"
-        f"📝 Quizzes: *{callback_query.message.text.split(chr(10))[1].replace('📝 Quizzes: ', '').replace('*', '')}*\n"
+        f"📊 Tema: *{data['topic']}*\n"
+        f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n"
         f"📚 Nivel: *{level}*\n\n"
         "¿Qué dialecto?",
         reply_markup=get_dialect_keyboard(),
@@ -181,7 +254,7 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
 
-# ── dialect → generate N quizzes ───────────────────────────
+# ── dialect → generate quizzes ─────────────────────────────
 
 
 @router.callback_query(SurveyCreation.waiting_dialect, F.data.startswith("dialect:"))
@@ -190,19 +263,21 @@ async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     dialect = callback_query.data.split(":")[1]
     data = await state.get_data()
     topic = data["topic"]
-    count_es = data["count_espanol"]
-    count_ru = data["count_ruso"]
+    counts_es = _get_counts(data, "es")
+    counts_ru = _get_counts(data, "ru")
+    total_es = sum(counts_es.values())
+    total_ru = sum(counts_ru.values())
     level = data["level"]
 
     await state.update_data(dialect=dialect)
     await state.set_state(SurveyCreation.generating)
     await callback_query.message.edit_text(
-        f"🔄 Generando {count_es} quizzes en español y {count_ru} en ruso..."
+        f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso..."
     )
     await callback_query.answer()
 
     try:
-        quizzes = await ai.generate_quizzes(topic, count_es, count_ru, level, dialect)
+        quizzes = await ai.generate_quizzes(topic, counts_es, counts_ru, level, dialect)
     except AIServiceError as e:
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",

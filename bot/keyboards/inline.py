@@ -1,47 +1,44 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
+# ── categories ──────────────────────────────────────────────
+
+CATEGORIES = [
+    {"key": "fill_blank", "emoji": "📝", "label": "Cumplimentar espacios en blanco"},
+    {"key": "meaning", "emoji": "📖", "label": "Significado de expresión"},
+    {"key": "synonyms", "emoji": "🔄", "label": "Sinónimos / antónimos"},
+    {"key": "slang", "emoji": "🎭", "label": "EDUCADO / Slang"},
+]
+
+COUNTER_MAX = 3
+
+
 # ── reusable counter component ──────────────────────────────
 
 
-def get_counter_keyboard(
-    counters: dict[str, tuple[str, int]],
-    min_total: int = 1,
+def get_category_counter_keyboard(
+    counts: dict[str, int],
     confirm_callback: str = "counter:ok",
 ) -> InlineKeyboardMarkup:
     """
-    Reusable counter keyboard.
-
-    counters = {
-        "key": ("emoji", current_value),
-        ...
-    }
-    min_total: minimum combined value across all counters to enable confirm
+    4-category counter keyboard.
+    counts = {"fill_blank": 2, "meaning": 0, ...}
     """
     rows = []
-    for key, (emoji, value) in counters.items():
+    for cat in CATEGORIES:
+        key = cat["key"]
+        emoji = cat["emoji"]
+        value = counts.get(key, 0)
         rows.append([
-            InlineKeyboardButton(
-                text="◀️",
-                callback_data=f"counter:{key}:-",
-            ),
-            InlineKeyboardButton(
-                text=f"{emoji} {value}",
-                callback_data=f"counter:{key}:show",
-            ),
-            InlineKeyboardButton(
-                text="▶️",
-                callback_data=f"counter:{key}:+",
-            ),
+            InlineKeyboardButton(text="◀️", callback_data=f"counter:{key}:-"),
+            InlineKeyboardButton(text=f"{emoji} {value}", callback_data=f"counter:{key}:show"),
+            InlineKeyboardButton(text="▶️", callback_data=f"counter:{key}:+"),
         ])
 
-    total = sum(v for _, v in counters.values())
-    if total >= min_total:
+    total = sum(counts.get(c["key"], 0) for c in CATEGORIES)
+    if total >= 1:
         rows.append([
-            InlineKeyboardButton(
-                text="✅ Listo",
-                callback_data=confirm_callback,
-            )
+            InlineKeyboardButton(text="✅ Listo", callback_data=confirm_callback)
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -3,7 +3,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 class SurveyCreation(StatesGroup):
     waiting_topic = State()
-    waiting_counter = State()
+    waiting_counter_es = State()
+    waiting_counter_ru = State()
     waiting_level = State()
     waiting_dialect = State()
     generating = State()

@@ -16,6 +16,7 @@ class Quiz:
     question: str
     options: list[str]
     correct_index: int
+    category: str = ""
 
     @property
     def correct_option(self) -> str:
@@ -32,6 +33,7 @@ class Quiz:
             question=str(data["question"]).strip(),
             options=[str(o).strip() for o in data["options"]],
             correct_index=int(correct),
+            category=str(data.get("category", "")),
         )
 
 
@@ -53,11 +55,20 @@ class AIService:
     # ── public ──────────────────────────────────────────────
 
     async def generate_quizzes(
-        self, topic: str, count_espanol: int, count_ruso: int, level: str, dialect: str
+        self, topic: str, count_es: dict[str, int], count_ru: dict[str, int],
+        level: str, dialect: str
     ) -> list[Quiz]:
-        """Generate quizzes. Returns unified list with sequential ids."""
-        system = self._system_prompt_generate(count_espanol, count_ruso, level, dialect)
-        user = f"Crea {count_espanol} quizzes en español y {count_ruso} quizzes en ruso sobre: {topic}"
+        """
+        Generate quizzes with per-category counts.
+        count_es = {"fill_blank": 2, "meaning": 1, "synonyms": 0, "slang": 1}
+        count_ru = {"fill_blank": 1, "meaning": 2, "synonyms": 1, "slang": 0}
+        """
+        total_es = sum(count_es.values())
+        total_ru = sum(count_ru.values())
+        total = total_es + total_ru
+
+        system = self._system_prompt_generate(count_es, count_ru, level, dialect)
+        user = f"Crea quizzes sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
         result = self._try_parse_structured_response(raw)
@@ -69,8 +80,8 @@ class AIService:
                 "Aquí está tu respuesta:\n\n"
                 f"{raw}\n\n"
                 "Por favor, reformátala EXACTAMENTE así, sin texto adicional, sin markdown, sin ```:\n"
-                '{"espanol":[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}],'
-                '"ruso":[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}]}'
+                '{"espanol":[{"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0}],'
+                '"ruso":[{"id":1,"category":"meaning","question":"...","options":["A","B","C","D"],"correct":0}]}'
             )
             raw2 = await self._call_api_with_retry(system, fix_prompt)
             result = self._try_parse_structured_response(raw2)
@@ -85,9 +96,9 @@ class AIService:
         espanol_quizzes = result.get("espanol", [])
         ruso_quizzes = result.get("ruso", [])
 
-        # Enforce counts
-        espanol_quizzes = espanol_quizzes[:count_espanol]
-        ruso_quizzes = ruso_quizzes[:count_ruso]
+        # Enforce totals
+        espanol_quizzes = espanol_quizzes[:total_es]
+        ruso_quizzes = ruso_quizzes[:total_ru]
 
         # Assign sequential ids
         all_quizzes = espanol_quizzes + ruso_quizzes
@@ -242,14 +253,32 @@ class AIService:
     # ── prompts ─────────────────────────────────────────────
 
     def _system_prompt_generate(
-        self, count_espanol: int, count_ruso: int, level: str, dialect: str
+        self, count_es: dict[str, int], count_ru: dict[str, int], level: str, dialect: str
     ) -> str:
-        total = count_espanol + count_ruso
+        total_es = sum(count_es.values())
+        total_ru = sum(count_ru.values())
+        total = total_es + total_ru
+
+        def _cat_list(counts: dict[str, int], lang: str) -> str:
+            lines = []
+            for key, n in counts.items():
+                if n > 0:
+                    lines.append(f"  - {n} de categoría '{key}'")
+            return "\n".join(lines) if lines else f"  (ninguno en {lang})"
+
+        es_list = _cat_list(count_es, "español")
+        ru_list = _cat_list(count_ru, "ruso")
+
         return (
             "Eres un experto en crear quizzes de español para estudiantes rusohablantes.\n\n"
-            f"Debes generar EXACTAMENTE {total} quizzes:\n"
-            f"  - {count_espanol} quizzes con la pregunta en ESPAÑOL\n"
-            f"  - {count_ruso} quizzes con la pregunta en RUSO\n\n"
+            f"Categorías de quiz:\n"
+            "  - fill_blank: Cumplimentar espacios en blanco (completar la palabra correcta)\n"
+            "  - meaning: Dar respuesta al significado de una expresión\n"
+            "  - synonyms: Opción de sinónimos / antónimos\n"
+            "  - slang: Opción de EDUCADO / Slang\n\n"
+            f"Debes generar EXACTAMENTE {total} quizzes:\n\n"
+            f"En ESPAÑOL ({total_es}):\n{es_list}\n\n"
+            f"En RUSO ({total_ru}):\n{ru_list}\n\n"
             f"Nivel: {level}\n"
             f"Dialecto: {dialect}\n\n"
             "REGLAS:\n"
@@ -257,8 +286,9 @@ class AIService:
             "- El JSON tiene esta forma exacta:\n"
             '  {"espanol":[...],"ruso":[...]}\n'
             "- Cada quiz dentro de los arrays tiene esta forma:\n"
-            '  {"id":1,"question":"...","options":["A","B","C","D"],"correct":0}\n'
+            '  {"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0}\n'
             "- 'id' = número secuencial empezando en 1 DENTRO de cada array\n"
+            "- 'category' = clave de categoría: fill_blank, meaning, synonyms, slang\n"
             "- 'question' = la pregunta clara y concisa\n"
             "- 'options' = entre 3 y 4 opciones de respuesta\n"
             "- 'correct' = índice (0-based) de la respuesta correcta\n"
@@ -269,8 +299,7 @@ class AIService:
             f"- Dialecto {dialect}: usa sus particularidades de gramática y vocabulario, "
             "PERO el quiz se centra en el TEMA, no en el dialecto\n"
             "- DIFICULTAD CRECIENTE dentro de cada idioma\n"
-            "- Varía los tipos de pregunta (completar, seleccionar, conjugación, etc.)\n"
-            f"- DEBES generar exactamente {count_espanol} en español y {count_ruso} en ruso"
+            f"- DEBES generar exactamente las cantidades especificadas por categoría"
         )
 
     def _system_prompt_edit(self) -> str:
