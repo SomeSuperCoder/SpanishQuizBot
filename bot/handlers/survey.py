@@ -216,7 +216,7 @@ async def handle_topic_manual(message: Message, state: FSMContext):
     data = await state.get_data()
     await message.answer(
         _get_counter_es_text(data),
-        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "es"), show_skip=True),
         parse_mode="Markdown",
     )
 
@@ -274,7 +274,7 @@ async def handle_topic_forward(message: Message, state: FSMContext):
     data = await state.get_data()
     await message.answer(
         _get_counter_es_text(data),
-        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "es"), show_skip=True),
         parse_mode="Markdown",
     )
 
@@ -290,16 +290,31 @@ async def handle_counter_es(callback_query: CallbackQuery, state: FSMContext):
     # counter:ok — confirm → move to Russian
     if len(parts) == 2 and parts[1] == "ok":
         data = await state.get_data()
+        await state.set_state(SurveyCreation.waiting_counter_ru)
         total_es = _get_total(data, "es")
+        await callback_query.message.edit_text(
+            _get_counter_ru_text(data),
+            reply_markup=get_category_counter_keyboard(
+                _get_counts(data, "ru"),
+                show_skip=(total_es >= 1),  # skip only if Spanish has ≥1
+            ),
+            parse_mode="Markdown",
+        )
+        await callback_query.answer()
+        return
 
-        if total_es < 1:
-            await callback_query.answer("⚠️ Necesitas al menos 1 quiz en español", show_alert=True)
-            return
-
+    # counter:skip — set all Spanish to 0, move to Russian (no skip allowed)
+    if len(parts) == 2 and parts[1] == "skip":
+        counts_es = {c["key"]: 0 for c in CATEGORIES}
+        await state.update_data(counts_es=counts_es)
+        data = await state.get_data()
         await state.set_state(SurveyCreation.waiting_counter_ru)
         await callback_query.message.edit_text(
             _get_counter_ru_text(data),
-            reply_markup=get_category_counter_keyboard(_get_counts(data, "ru")),
+            reply_markup=get_category_counter_keyboard(
+                _get_counts(data, "ru"),
+                show_skip=False,  # Spanish is 0, can't skip Russian
+            ),
             parse_mode="Markdown",
         )
         await callback_query.answer()
@@ -323,7 +338,10 @@ async def handle_counter_es(callback_query: CallbackQuery, state: FSMContext):
 
     await callback_query.message.edit_text(
         _get_counter_es_text(data),
-        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
+        reply_markup=get_category_counter_keyboard(
+            _get_counts(data, "es"),
+            show_skip=True,  # Spanish always allows skip
+        ),
         parse_mode="Markdown",
     )
     await callback_query.answer()
@@ -384,6 +402,47 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
         await callback_query.answer()
         return
 
+    # counter:skip — set all Russian to 0, continue to level/dialect
+    if len(parts) == 2 and parts[1] == "skip":
+        counts_ru = {c["key"]: 0 for c in CATEGORIES}
+        await state.update_data(counts_ru=counts_ru)
+        data = await state.get_data()
+        total_es = _get_total(data, "es")
+
+        # Check if level/dialect were auto-detected
+        auto_level = data.get("auto_level")
+        auto_dialect = data.get("auto_dialect")
+
+        if auto_level and auto_dialect:
+            await state.update_data(level=auto_level, dialect=auto_dialect)
+            await state.set_state(SurveyCreation.generating)
+
+            level_label = f"{auto_level} 🔍" if auto_level else auto_level
+            dialect_label = f"{auto_dialect} 🔍" if auto_dialect else auto_dialect
+
+            await callback_query.message.edit_text(
+                f"📊 Tema: *{data['topic']}*\n"
+                f"📝 Total: *{total_es}* español + *0* ruso\n"
+                f"📚 Nivel: *{level_label}* (detectado)\n"
+                f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
+                "🔄 Generando quizzes..."
+            )
+            await callback_query.answer()
+            await _generate_and_preview(callback_query, state)
+            return
+
+        # Manual mode — ask for level
+        await state.set_state(SurveyCreation.waiting_level)
+        await callback_query.message.edit_text(
+            f"📊 Tema: *{data['topic']}*\n"
+            f"📝 Total: *{total_es}* español + *0* ruso\n\n"
+            "¿Qué nivel?",
+            reply_markup=get_level_keyboard(),
+            parse_mode="Markdown",
+        )
+        await callback_query.answer()
+        return
+
     # counter:key:+/-  (3 parts)
     action = parts[2]
     key = parts[1]
@@ -399,10 +458,14 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
 
     await state.update_data(counts_ru=counts)
     data = await state.get_data()
+    total_es = _get_total(data, "es")
 
     await callback_query.message.edit_text(
         _get_counter_ru_text(data),
-        reply_markup=get_category_counter_keyboard(_get_counts(data, "ru")),
+        reply_markup=get_category_counter_keyboard(
+            _get_counts(data, "ru"),
+            show_skip=(total_es >= 1),  # skip only if Spanish has ≥1
+        ),
         parse_mode="Markdown",
     )
     await callback_query.answer()

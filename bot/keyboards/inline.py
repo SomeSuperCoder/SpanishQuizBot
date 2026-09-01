@@ -19,10 +19,14 @@ COUNTER_MAX = 3
 def get_category_counter_keyboard(
     counts: dict[str, int],
     confirm_callback: str = "counter:ok",
+    show_skip: bool = False,
+    skip_callback: str = "counter:skip",
 ) -> InlineKeyboardMarkup:
     """
     4-category counter keyboard.
     counts = {"fill_blank": 2, "meaning": 0, ...}
+    When total == 0 and show_skip: shows "⏭️ Saltar" button.
+    When total >= 1: shows "✅ Listo" button in same position.
     """
     rows = []
     for cat in CATEGORIES:
@@ -39,6 +43,10 @@ def get_category_counter_keyboard(
     if total >= 1:
         rows.append([
             InlineKeyboardButton(text="✅ Listo", callback_data=confirm_callback)
+        ])
+    elif show_skip:
+        rows.append([
+            InlineKeyboardButton(text="⏭️ Saltar", callback_data=skip_callback)
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
