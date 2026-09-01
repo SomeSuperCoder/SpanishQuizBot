@@ -385,7 +385,17 @@ class AIService:
             f"- Dialecto {dialect}: usa sus particularidades de gramática y vocabulario, "
             "PERO el quiz se centra en el TEMA, no en el dialecto\n"
             "- DIFICULTAD CRECIENTE dentro de cada idioma\n"
-            f"- DEBES generar exactamente las cantidades especificadas por categoría"
+            f"- DEBES generar exactamente las cantidades especificadas por categoría\n\n"
+            "REGLA FUNDAMENTAL — INDEPENDENCIA TOTAL ENTRE IDIOMAS:\n"
+            "Los quizzes en español y en ruso son DOS MUNDOS COMPLETAMENTE SEPARADOS.\n"
+            "NO son traducciones el uno del otro. NO comparten ejemplos, microtemas,\n"
+            "ni contenido. Si la oración X se usó en un quiz en español, NO puede\n"
+            "aparecer en ningún quiz en ruso, y viceversa.\n"
+            "Cada idioma tiene su propia pool de ejemplos, su propio ángulo,\n"
+            "sus propias oraciones de ejemplo. Piensa en ellos como dos reinos\n"
+            "distintos de un mismo tema — comparten la frontera, no los ciudadanos.\n"
+            "El 60% de oraciones originales se divide: unas para español, otras para ruso.\n"
+            "Nunca las dupliques entre idiomas."
         )
 
     def _system_prompt_edit(self) -> str:
