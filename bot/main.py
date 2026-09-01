@@ -3,6 +3,9 @@ import logging
 import socket
 from urllib.parse import urlparse
 
+import bot.config as config
+from bot.config import settings
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -37,8 +40,9 @@ async def _async_main():
     proxy_url = settings.proxy_url
     proxy_available = _check_proxy(proxy_url)
     if proxy_available:
-        logger.info("🔌 Proxy detected at %s — using proxy for Telegram API", proxy_url)
+        logger.info("🔌 Proxy detected at %s — using proxy for Telegram API + AI service", proxy_url)
         session = AiohttpSession(proxy=proxy_url)
+        config.active_proxy_url = proxy_url  # AI service reads this at call time
     else:
         logger.warning("⚠️  Proxy at %s unreachable — connecting directly (will fail if Telegram is blocked)", proxy_url)
         session = None

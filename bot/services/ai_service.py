@@ -307,7 +307,8 @@ class AIService:
             "temperature": 0.7,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        from bot.config import active_proxy_url
+        async with httpx.AsyncClient(timeout=self.timeout, proxy=active_proxy_url) as client:
             resp = await client.post(self.api_url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
