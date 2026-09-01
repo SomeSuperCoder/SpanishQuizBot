@@ -178,16 +178,23 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     total = total_es + total_ru
     chat_id = callback_query.message.chat.id
 
-    async def _update_thinking(text: str) -> None:
-        """Edit the original message to show the current stage."""
+    async def _update_thinking(stage: int, text: str) -> None:
+        """Edit the original message to show the current stage with progress."""
+        progress = "⬜" * stage + "⬛" * (3 - stage)
         try:
-            await callback_query.message.edit_text(text)
+            await callback_query.message.edit_text(
+                f"{progress}\n{text}",
+                parse_mode="Markdown",
+            )
         except Exception:
             pass  # message may already be deleted
 
     # ── Stage 1: Initial generation ─────────────────────────
     await callback_query.answer()
-    await _update_thinking(f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso...")
+    await _update_thinking(
+        1,
+        f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso...",
+    )
 
     try:
         quizzes = await ai.generate_quizzes(
@@ -210,7 +217,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
 
     # ── Stage 2: AI self-review ─────────────────────────────
-    await _update_thinking(f"🔍 Revisión — verificando {total} quizzes")
+    await _update_thinking(2, f"🔍 Revisión — verificando {total} quizzes")
 
     try:
         issues = await ai.review_quizzes(quizzes, topic, level, dialect)
@@ -221,7 +228,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 3: Fix issues ─────────────────────────────────
     fixed_count = 0
     if issues:
-        await _update_thinking(f"🔧 Corrección — {len(issues)} problema(s) detectado(s)")
+        await _update_thinking(3, f"🔧 Corrección — {len(issues)} problema(s) detectado(s)")
 
         history = [q.to_dict() for q in quizzes]
         for issue in issues:
