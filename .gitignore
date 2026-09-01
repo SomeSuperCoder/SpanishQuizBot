@@ -7,3 +7,4 @@ bot.db
 dist/
 build/
 .pytest_cache/
+data/
