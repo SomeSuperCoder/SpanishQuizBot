@@ -7,7 +7,10 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
 from aiogram.methods.send_rich_message import SendRichMessage
-from aiogram.types import InputRichMessage, InputRichBlockThinking, InputRichBlockParagraph
+from aiogram.types import (
+    InputRichMessage, InputRichBlockThinking, InputRichBlockParagraph,
+    RichTextCustomEmoji,
+)
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
@@ -186,18 +189,18 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     EMOJI_REVIEW = "5534951812081123354"
     EMOJI_FIX = "5537581341383589905"
 
-    def _emoji(custom_id: str, fallback: str) -> str:
-        """Wrap a custom emoji ID in tg-emoji tags."""
-        return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
+    def _emoji(custom_id: str, fallback: str) -> RichTextCustomEmoji:
+        """Create a custom emoji rich text entity."""
+        return RichTextCustomEmoji(custom_emoji_id=custom_id, alternative_text=fallback)
 
-    async def _update_thinking(text: str) -> None:
+    async def _update_thinking(text_parts: list) -> None:
         """Send a thinking draft to show the current stage."""
         try:
             await callback_query.bot(SendRichMessageDraft(
                 chat_id=chat_id,
                 draft_id=1,
                 rich_message=InputRichMessage(
-                    blocks=[InputRichBlockThinking(text=text)]
+                    blocks=[InputRichBlockThinking(text=text_parts)]
                 ),
             ))
         except Exception:
@@ -218,9 +221,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
 
     # ── Stage 1: Initial generation ─────────────────────────
     await callback_query.answer()
-    await _update_thinking(
-        f'{_emoji(EMOJI_GENERATE, "🔄")} Generando {total_es} quizzes en español y {total_ru} en ruso...',
-    )
+    await _update_thinking([
+        _emoji(EMOJI_GENERATE, "🔄"),
+        f" Generando {total_es} quizzes en español y {total_ru} en ruso...",
+    ])
 
     try:
         quizzes = await ai.generate_quizzes(
@@ -243,7 +247,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
 
     # ── Stage 2: AI self-review ─────────────────────────────
-    await _update_thinking(f'{_emoji(EMOJI_REVIEW, "🔍")} Revisión — verificando {total} quizzes')
+    await _update_thinking([
+        _emoji(EMOJI_REVIEW, "🔍"),
+        f" Revisión — verificando {total} quizzes",
+    ])
 
     try:
         issues = await ai.review_quizzes(quizzes, topic, level, dialect)
@@ -254,7 +261,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 3: Fix issues ─────────────────────────────────
     fixed_count = 0
     if issues:
-        await _update_thinking(f'{_emoji(EMOJI_FIX, "🔧")} Corrección — {len(issues)} problema(s) detectado(s)')
+        await _update_thinking([
+            _emoji(EMOJI_FIX, "🔧"),
+            f" Corrección — {len(issues)} problema(s) detectado(s)",
+        ])
 
         history = [q.to_dict() for q in quizzes]
         for issue in issues:
