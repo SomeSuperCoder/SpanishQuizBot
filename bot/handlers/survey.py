@@ -55,6 +55,14 @@ def _build_summary(quizzes: list[Quiz], level: str) -> str:
     return "\n".join(lines)
 
 
+CATEGORY_LEGEND = (
+    "📝 Espacios en blanco\n"
+    "📖 Significado de expresión\n"
+    "🔄 Sinónimos / antónimos\n"
+    "🎭 EDUCADO / Slang"
+)
+
+
 def _get_counter_es_text(data: dict) -> str:
     """Build the Spanish category counter display text."""
     topic = data.get("topic", "")
@@ -63,7 +71,8 @@ def _get_counter_es_text(data: dict) -> str:
     return (
         f"📊 Tema: *{topic}*\n\n"
         f"🇪🇸 *Categorías en español* (total: *{total}*)\n\n"
-        f"Usa las flechas para ajustar:"
+        f"Usa las flechas para ajustar:\n\n"
+        f"{CATEGORY_LEGEND}"
     )
 
 
@@ -78,7 +87,8 @@ def _get_counter_ru_text(data: dict) -> str:
         f"📊 Tema: *{topic}*\n"
         f"📝 Total español: *{total_es}*\n\n"
         f"🇷🇺 *Categorías en ruso* (total: *{total_ru}*)\n\n"
-        f"Usa las flechas para ajustar:"
+        f"Usa las flechas para ajustar:\n\n"
+        f"{CATEGORY_LEGEND}"
     )
 
 
