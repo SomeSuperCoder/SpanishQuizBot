@@ -10,6 +10,7 @@ from bot.keyboards.inline import (
     get_start_keyboard,
     get_quantity_keyboard,
     get_level_keyboard,
+    get_dialect_keyboard,
     get_review_keyboard,
     get_edit_selector_keyboard,
     get_edit_done_keyboard,
@@ -103,26 +104,48 @@ async def handle_quantity(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
 
-# ── level → generate N quizzes ─────────────────────────────
+# ── level → dialect ─────────────────────────────────────────
 
 
 @router.callback_query(SurveyCreation.waiting_level, F.data.startswith("level:"))
 async def handle_level(callback_query: CallbackQuery, state: FSMContext):
-    """User chose level → generate N quizzes with AI."""
+    """User chose level → ask for dialect."""
     level = callback_query.data.split(":")[1]
+    await state.update_data(level=level)
+    await state.set_state(SurveyCreation.waiting_dialect)
+
+    await callback_query.message.edit_text(
+        f"📊 Tema: *{callback_query.message.text.split(chr(10))[0].replace('📊 Tema: ', '').replace('*', '')}*\n"
+        f"📝 Cantidad: *{callback_query.message.text.split(chr(10))[1].replace('📝 Cantidad: ', '').replace('*', '')}*\n"
+        f"📚 Nivel: *{level}*\n\n"
+        "¿Qué dialecto?",
+        reply_markup=get_dialect_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+# ── dialect → generate N quizzes ───────────────────────────
+
+
+@router.callback_query(SurveyCreation.waiting_dialect, F.data.startswith("dialect:"))
+async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
+    """User chose dialect → generate N quizzes with AI."""
+    dialect = callback_query.data.split(":")[1]
     data = await state.get_data()
     topic = data["topic"]
     count = data["count"]
+    level = data["level"]
 
-    await state.update_data(level=level)
+    await state.update_data(dialect=dialect)
     await state.set_state(SurveyCreation.generating)
     await callback_query.message.edit_text(
-        f"🔄 Generando {count} quizzes nivel {level} con IA..."
+        f"🔄 Generando {count} quizzes nivel {level} ({dialect}) con IA..."
     )
     await callback_query.answer()
 
     try:
-        quizzes = await ai.generate_quizzes(topic, count, level)
+        quizzes = await ai.generate_quizzes(topic, count, level, dialect)
     except AIServiceError as e:
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",
@@ -152,7 +175,7 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
     # Summary + action buttons
     summary = _build_summary(quizzes, level)
     await callback_query.message.answer(
-        f"👆 {len(quizzes)} quizzes nivel {level} (del más fácil al más difícil):\n\n"
+        f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
         f"{summary}\n\n¿Qué quieres hacer?",
         reply_markup=get_review_keyboard(),
     )
@@ -180,6 +203,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     topic = data["topic"]
     level = data["level"]
+    dialect = data["dialect"]
     quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
     channel_id = await BotConfigRepository.get_channel_id()
@@ -207,7 +231,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             )
 
         await callback_query.message.edit_text(
-            f"🚀 ¡{len(quizzes)} quizzes nivel {level} publicados!\n\n"
+            f"🚀 ¡{len(quizzes)} quizzes nivel {level} — {dialect} publicados!\n\n"
             f"📍 Canal: {channel_title or channel_id}\n"
             f"📊 Tema: {topic}",
             reply_markup=get_start_keyboard(),

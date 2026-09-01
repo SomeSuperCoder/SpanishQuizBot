@@ -33,6 +33,14 @@ def get_level_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_dialect_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇪🇸 Castellano", callback_data="dialect:Castellano")],
+        [InlineKeyboardButton(text="🇲🇽 Mexicano", callback_data="dialect:Mexicano")],
+        [InlineKeyboardButton(text="🇦🇷 Argentino", callback_data="dialect:Argentino")],
+    ])
+
+
 def get_review_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

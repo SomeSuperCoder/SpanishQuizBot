@@ -53,9 +53,9 @@ class AIService:
 
     # ── public ──────────────────────────────────────────────
 
-    async def generate_quizzes(self, topic: str, count: int, level: str) -> list[Quiz]:
+    async def generate_quizzes(self, topic: str, count: int, level: str, dialect: str) -> list[Quiz]:
         """Generate N quizzes from a topic. Difficulty increases from 1 to N."""
-        system = self._system_prompt_generate(count, level)
+        system = self._system_prompt_generate(count, level, dialect)
         user = f"Crea {count} quizzes sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
@@ -72,7 +72,7 @@ class AIService:
                 '[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0},'
                 '{"id":2,"question":"...","options":["A","B","C","D"],"correct":1}]'
             )
-            raw2 = await self._call_api_with_retry(self._system_prompt_generate(count, level), fix_prompt)
+            raw2 = await self._call_api_with_retry(self._system_prompt_generate(count, level, dialect), fix_prompt)
             quizzes = self._try_parse_quiz_array(raw2)
 
             if quizzes is None:
@@ -226,10 +226,15 @@ class AIService:
 
     # ── prompts ─────────────────────────────────────────────
 
-    def _system_prompt_generate(self, count: int, level: str) -> str:
+    def _system_prompt_generate(self, count: int, level: str, dialect: str) -> str:
         return (
             "Eres un experto en crear quizzes de español para estudiantes.\n\n"
             f"Debes generar EXACTAMENTE {count} quizzes de opción múltiple para nivel {level}.\n\n"
+            f"DIALECTO: {dialect}\n"
+            "Usa las particularidades de gramática y vocabulario de este dialecto "
+            "(conjugaciones, expresiones, uso de ustedes/vosotros, etc.) "
+            "PERO el quiz debe centrarse en el TEMA, no en el dialecto. "
+            "El dialecto es un suplemento, no el tema de la pregunta.\n\n"
             "REGLAS:\n"
             "- Responde SOLO con un array JSON válido, sin texto adicional\n"
             f"- El array debe tener exactamente {count} objetos\n"
