@@ -286,7 +286,7 @@ async def handle_topic_forward(message: Message, state: FSMContext):
 # ── category_mode: manual or auto ──────────────────────────
 
 
-@router.callback_query(SurveyCreation.waiting_category_mode, F.data.startswith("category_mode:"))
+@router.callback_query(SurveyCreation.waiting_category_mode, F.data.startswith("category_mode:") & (F.data != "category_mode:accept"))
 async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext):
     """User chose manual or auto category counts."""
     mode = callback_query.data.split(":")[1]
