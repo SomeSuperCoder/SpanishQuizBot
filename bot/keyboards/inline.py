@@ -1,25 +1,49 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+
 def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Crear encuesta", callback_data="create_survey")]
     ])
 
-def get_survey_review_keyboard() -> InlineKeyboardMarkup:
+
+def get_quantity_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Perfecto!", callback_data="survey_approve"),
-            InlineKeyboardButton(text="✏️ Mejorar", callback_data="survey_improve")
+            InlineKeyboardButton(text="2", callback_data="quantity:2"),
+            InlineKeyboardButton(text="3", callback_data="quantity:3"),
+            InlineKeyboardButton(text="4", callback_data="quantity:4"),
+            InlineKeyboardButton(text="5", callback_data="quantity:5"),
         ]
     ])
 
-def get_confirm_keyboard() -> InlineKeyboardMarkup:
+
+def get_review_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚀 Publicar", callback_data="survey_publish"),
-            InlineKeyboardButton(text="❌ Cancelar", callback_data="survey_cancel")
+            InlineKeyboardButton(text="✏️ Editar", callback_data="survey_edit"),
+            InlineKeyboardButton(text="🚀 Publicar todos", callback_data="survey_publish"),
         ]
     ])
+
+
+def get_edit_selector_keyboard(count: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=str(i), callback_data=f"edit_select:{i}")]
+        for i in range(1, count + 1)
+    ]
+    buttons.append([InlineKeyboardButton(text="❌ Cancelar", callback_data="survey_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_edit_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Editar otro", callback_data="survey_edit"),
+            InlineKeyboardButton(text="🚀 Publicar todos", callback_data="survey_publish"),
+        ]
+    ])
+
 
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

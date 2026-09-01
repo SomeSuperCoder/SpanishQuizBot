@@ -2,20 +2,17 @@ import json
 import logging
 
 from aiogram import Router, F
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
-    get_survey_review_keyboard,
-    get_confirm_keyboard,
-    get_cancel_keyboard,
     get_start_keyboard,
+    get_quantity_keyboard,
+    get_review_keyboard,
+    get_edit_selector_keyboard,
+    get_edit_done_keyboard,
+    get_cancel_keyboard,
 )
 from bot.states.survey import SurveyCreation
 from bot.services.ai_service import AIService, AIServiceError, Quiz
@@ -28,9 +25,9 @@ logger = logging.getLogger(__name__)
 # ── helpers ─────────────────────────────────────────────────
 
 
-async def _send_quiz_preview(target, quiz: Quiz, bot) -> Message:
-    """Send a real Telegram quiz poll. Returns the poll message."""
-    return await bot.send_poll(
+async def _send_quiz_preview(target, quiz: Quiz, bot) -> None:
+    """Send a real Telegram quiz poll (no [n] prefix — that goes in the summary)."""
+    await bot.send_poll(
         chat_id=target,
         question=quiz.question,
         options=[{"text": opt} for opt in quiz.options],
@@ -40,7 +37,15 @@ async def _send_quiz_preview(target, quiz: Quiz, bot) -> Message:
     )
 
 
-# ── handlers ───────────────────────────────────────────────
+def _build_summary(quizzes: list[Quiz]) -> str:
+    """Build the [n] summary shown in the review message."""
+    lines = []
+    for q in quizzes:
+        lines.append(f"[{q.id}] {q.question}")
+    return "\n".join(lines)
+
+
+# ── /start & create ─────────────────────────────────────────
 
 
 @router.callback_query(F.data == "create_survey")
@@ -48,152 +53,105 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     """User clicked 'Crear encuesta' — ask for topic."""
     await state.set_state(SurveyCreation.waiting_topic)
     await callback_query.message.edit_text(
-        "📝 ¡Genial! Vamos a crear un quiz.\n\n"
+        "📝 ¡Genial! Vamos a crear quizzes.\n\n"
         "¿Cuál es el tema?\n"
         "(Ej: Imperfecto de subjuntivo, Ser vs Estar, Pretérito indefinido...)"
     )
     await callback_query.answer()
 
 
+# ── topic → quantity ────────────────────────────────────────
+
+
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic → AI generates quiz → send REAL poll as preview."""
+    """Receive topic → ask how many quizzes."""
     topic = message.text.strip()
     await state.update_data(topic=topic)
+    await state.set_state(SurveyCreation.waiting_quantity)
+
+    await message.answer(
+        f"📊 Tema: *{topic}*\n\n¿Cuántas encuestas quieres crear?",
+        reply_markup=get_quantity_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+# ── quantity → generate N quizzes ──────────────────────────
+
+
+@router.callback_query(SurveyCreation.waiting_quantity, F.data.startswith("quantity:"))
+async def handle_quantity(callback_query: CallbackQuery, state: FSMContext):
+    """User chose quantity → generate N quizzes with AI."""
+    count = int(callback_query.data.split(":")[1])
+    data = await state.get_data()
+    topic = data["topic"]
+
     await state.set_state(SurveyCreation.generating)
-
-    loading_msg = await message.answer("🔄 Generando quiz con IA...")
+    await callback_query.message.edit_text(
+        f"🔄 Generando {count} quizzes con IA..."
+    )
+    await callback_query.answer()
 
     try:
-        quiz = await ai.generate_quiz(topic)
+        quizzes = await ai.generate_quizzes(topic, count)
     except AIServiceError as e:
-        await loading_msg.edit_text(
-            f"❌ {e}\n\nIntenta de nuevo con otro tema.",
+        await callback_query.message.edit_text(
+            f"❌ {e}\n\nIntenta de nuevo.",
             reply_markup=get_start_keyboard(),
         )
         await state.clear()
         return
     except Exception:
-        logger.exception("Unexpected error generating quiz")
-        await loading_msg.edit_text(
-            "❌ Error inesperado al generar el quiz. Intenta de nuevo.",
+        logger.exception("Unexpected error generating quizzes")
+        await callback_query.message.edit_text(
+            "❌ Error inesperado al generar los quizzes. Intenta de nuevo.",
             reply_markup=get_start_keyboard(),
         )
         await state.clear()
         return
 
-    # Save to DB
-    survey_id = await SurveyRepository.create(
-        user_id=message.from_user.id,
-        topic=topic,
-        content=quiz.question,
-        options=json.dumps(quiz.options),
-        correct_index=quiz.correct_index,
-    )
-
-    await state.update_data(
-        survey_id=survey_id,
-        quiz_question=quiz.question,
-        quiz_options=quiz.options,
-        quiz_correct=quiz.correct_index,
-    )
+    # Serialize quizzes for FSM storage
+    quizzes_data = [q.to_dict() for q in quizzes]
+    await state.update_data(quizzes=quizzes_data)
     await state.set_state(SurveyCreation.reviewing)
 
-    # Delete the "Generando..." message, then send the REAL poll
-    await loading_msg.delete()
-    await _send_quiz_preview(message.chat.id, quiz, message.bot)
+    # Send all polls as preview
+    await callback_query.message.delete()
+    for quiz in quizzes:
+        await _send_quiz_preview(callback_query.message.chat.id, quiz, callback_query.bot)
 
-    # Follow up with action buttons
-    await message.answer(
-        "👆 Esta es la vista previa del quiz.\n\n¿Qué quieres hacer?",
-        reply_markup=get_survey_review_keyboard(),
+    # Summary + action buttons
+    summary = _build_summary(quizzes)
+    await callback_query.message.answer(
+        f"👆 {len(quizzes)} quizzes generados (del más fácil al más difícil):\n\n"
+        f"{summary}\n\n¿Qué quieres hacer?",
+        reply_markup=get_review_keyboard(),
     )
 
 
-@router.callback_query(SurveyCreation.reviewing, F.data == "survey_approve")
-async def handle_approve(callback_query: CallbackQuery, state: FSMContext):
-    """User approved — show publish confirmation."""
-    await state.set_state(SurveyCreation.confirming)
-    await callback_query.message.edit_text(
-        "✅ ¡Quiz aprobado!\n\n¿Qué deseas hacer?",
-        reply_markup=get_confirm_keyboard(),
-    )
-    await callback_query.answer()
+# ── review: edit or publish ─────────────────────────────────
 
 
-@router.callback_query(SurveyCreation.reviewing, F.data == "survey_improve")
-async def handle_improve(callback_query: CallbackQuery, state: FSMContext):
-    """User wants to improve — ask for feedback."""
-    await state.set_state(SurveyCreation.waiting_improvement)
-    await callback_query.message.edit_text(
-        "✏️ Cuéntame qué quieres mejorar.\n\n¿Qué cambios necesitas?",
-        reply_markup=get_cancel_keyboard(),
-    )
-    await callback_query.answer()
-
-
-@router.message(SurveyCreation.waiting_improvement)
-async def handle_improvement(message: Message, state: FSMContext):
-    """Receive feedback → regenerate quiz → send NEW poll as preview."""
-    feedback = message.text.strip()
+@router.callback_query(SurveyCreation.reviewing, F.data == "survey_edit")
+async def handle_edit(callback_query: CallbackQuery, state: FSMContext):
+    """User wants to edit — show quiz selector."""
     data = await state.get_data()
-    topic = data["topic"]
-    survey_id = data["survey_id"]
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
-    loading_msg = await message.answer("🔄 Regenerando quiz...")
-
-    try:
-        quiz = await ai.generate_quiz(topic, feedback=feedback)
-    except AIServiceError as e:
-        await loading_msg.edit_text(
-            f"❌ {e}\n\nVuelve a intentar.",
-            reply_markup=get_survey_review_keyboard(),
-        )
-        return
-    except Exception:
-        logger.exception("Unexpected error regenerating quiz")
-        await loading_msg.edit_text(
-            "❌ Error inesperado. Intenta de nuevo.",
-            reply_markup=get_survey_review_keyboard(),
-        )
-        return
-
-    # Update DB
-    await SurveyRepository.update(
-        survey_id,
-        content=quiz.question,
-        options=json.dumps(quiz.options),
-        correct_index=quiz.correct_index,
+    await callback_query.message.edit_text(
+        "✏️ ¿Cuál quieres editar?",
+        reply_markup=get_edit_selector_keyboard(len(quizzes)),
     )
-
-    await state.update_data(
-        quiz_question=quiz.question,
-        quiz_options=quiz.options,
-        quiz_correct=quiz.correct_index,
-    )
-    await state.set_state(SurveyCreation.reviewing)
-
-    # Delete "Regenerando..." and send the NEW quiz poll
-    await loading_msg.delete()
-    await _send_quiz_preview(message.chat.id, quiz, message.bot)
-
-    await message.answer(
-        "👆 Nueva versión del quiz.\n\n¿Qué quieres hacer?",
-        reply_markup=get_survey_review_keyboard(),
-    )
+    await callback_query.answer()
 
 
-@router.callback_query(SurveyCreation.confirming, F.data == "survey_publish")
+@router.callback_query(SurveyCreation.reviewing, F.data == "survey_publish")
 async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
-    """Publish quiz as a REAL poll to the global channel."""
+    """Publish all quizzes to the global channel."""
     data = await state.get_data()
-    survey_id = data["survey_id"]
     topic = data["topic"]
-    quiz = Quiz(
-        question=data["quiz_question"],
-        options=data["quiz_options"],
-        correct_index=data["quiz_correct"],
-    )
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
     channel_id = await BotConfigRepository.get_channel_id()
     channel_title = await BotConfigRepository.get_channel_title()
@@ -209,28 +167,24 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
         return
 
     try:
-        sent = await callback_query.bot.send_poll(
-            chat_id=channel_id,
-            question=quiz.question,
-            options=[{"text": opt} for opt in quiz.options],
-            type="quiz",
-            correct_option_id=quiz.correct_index,
-            is_anonymous=True,  # channels require anonymous polls
-        )
-        await SurveyRepository.update(
-            survey_id,
-            status="published",
-            channel_id=channel_id,
-            message_id=sent.message_id,
-        )
+        for quiz in quizzes:
+            await callback_query.bot.send_poll(
+                chat_id=channel_id,
+                question=quiz.question,
+                options=[{"text": opt} for opt in quiz.options],
+                type="quiz",
+                correct_option_id=quiz.correct_index,
+                is_anonymous=True,
+            )
+
         await callback_query.message.edit_text(
-            f"🚀 ¡Quiz publicado!\n\n"
+            f"🚀 ¡{len(quizzes)} quizzes publicados!\n\n"
             f"📍 Canal: {channel_title or channel_id}\n"
             f"📊 Tema: {topic}",
             reply_markup=get_start_keyboard(),
         )
     except Exception:
-        logger.exception("Failed to publish quiz")
+        logger.exception("Failed to publish quizzes")
         await callback_query.message.edit_text(
             "❌ Error al publicar.\n\n"
             "Verifica que el bot sea administrador del canal.",
@@ -239,6 +193,79 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
 
     await state.clear()
     await callback_query.answer()
+
+
+# ── edit flow: select quiz → feedback → regenerate ─────────
+
+
+@router.callback_query(SurveyCreation.reviewing, F.data.startswith("edit_select:"))
+async def handle_edit_select(callback_query: CallbackQuery, state: FSMContext):
+    """User selected a quiz to edit — ask for feedback."""
+    quiz_id = int(callback_query.data.split(":")[1])
+    await state.update_data(editing_id=quiz_id)
+    await state.set_state(SurveyCreation.waiting_improvement)
+
+    await callback_query.message.edit_text(
+        f"✏️ Describe el cambio para el quiz #{quiz_id}:",
+        reply_markup=get_cancel_keyboard(),
+    )
+    await callback_query.answer()
+
+
+@router.message(SurveyCreation.waiting_improvement)
+async def handle_improvement(message: Message, state: FSMContext):
+    """Receive feedback → PATCH edit one quiz → show updated preview."""
+    feedback = message.text.strip()
+    data = await state.get_data()
+    topic = data["topic"]
+    editing_id = data["editing_id"]
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+
+    loading_msg = await message.answer(f"🔄 Regenerando quiz #{editing_id}...")
+
+    # Build history for AI context
+    history = [q.to_dict() for q in quizzes]
+
+    try:
+        edited_quiz = await ai.edit_quiz(topic, history, editing_id, feedback)
+    except AIServiceError as e:
+        await loading_msg.edit_text(
+            f"❌ {e}\n\nVuelve a intentar.",
+            reply_markup=get_edit_selector_keyboard(len(quizzes)),
+        )
+        await state.set_state(SurveyCreation.reviewing)
+        return
+    except Exception:
+        logger.exception("Unexpected error editing quiz")
+        await loading_msg.edit_text(
+            "❌ Error inesperado. Intenta de nuevo.",
+            reply_markup=get_edit_selector_keyboard(len(quizzes)),
+        )
+        await state.set_state(SurveyCreation.reviewing)
+        return
+
+    # Replace the edited quiz in the list
+    edited_quiz.id = editing_id
+    quizzes[editing_id - 1] = edited_quiz
+
+    # Update state
+    await state.update_data(quizzes=[q.to_dict() for q in quizzes])
+    await state.set_state(SurveyCreation.reviewing)
+
+    # Delete "Regenerando..." message, send the updated poll
+    await loading_msg.delete()
+    await _send_quiz_preview(message.chat.id, edited_quiz, message.bot)
+
+    # Summary + edit-done buttons
+    summary = _build_summary(quizzes)
+    await message.answer(
+        f"👆 Quiz #{editing_id} actualizado.\n\n"
+        f"{summary}\n\n¿Qué quieres hacer?",
+        reply_markup=get_edit_done_keyboard(),
+    )
+
+
+# ── cancel ──────────────────────────────────────────────────
 
 
 @router.callback_query(F.data == "survey_cancel")
