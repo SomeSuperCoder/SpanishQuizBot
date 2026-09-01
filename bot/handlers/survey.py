@@ -115,11 +115,31 @@ async def handle_topic(message: Message, state: FSMContext):
 async def handle_counter(callback_query: CallbackQuery, state: FSMContext):
     """Handle counter button press."""
     parts = callback_query.data.split(":")
-    action = parts[2]  # "+", "-", "show", or "ok" (handled by separate handler)
-    key = parts[1]     # "espanol" or "ruso"
 
-    if action == "ok":
-        return  # handled by handle_counter_confirm
+    # counter:ok — confirm
+    if len(parts) == 2 and parts[1] == "ok":
+        data = await state.get_data()
+        n_es = data.get("count_espanol", 0)
+        n_ru = data.get("count_ruso", 0)
+
+        if n_es + n_ru < 1:
+            await callback_query.answer("⚠️ Necesitas al menos 1 quiz", show_alert=True)
+            return
+
+        await state.set_state(SurveyCreation.waiting_level)
+        await callback_query.message.edit_text(
+            f"📊 Tema: *{data['topic']}*\n"
+            f"📝 Quizzes: *{n_es}* en español, *{n_ru}* en ruso\n\n"
+            "¿Qué nivel?",
+            reply_markup=get_level_keyboard(),
+            parse_mode="Markdown",
+        )
+        await callback_query.answer()
+        return
+
+    # counter:key:+/-  (3 parts)
+    action = parts[2]
+    key = parts[1]
 
     data = await state.get_data()
     current = data.get(f"count_{key}", 0)
@@ -135,28 +155,6 @@ async def handle_counter(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.message.edit_text(
         _get_counter_text(data),
         reply_markup=get_counter_keyboard(_build_counters(data)),
-        parse_mode="Markdown",
-    )
-    await callback_query.answer()
-
-
-@router.callback_query(SurveyCreation.waiting_counter, F.data == "counter:ok")
-async def handle_counter_confirm(callback_query: CallbackQuery, state: FSMContext):
-    """User confirmed counter → ask for level."""
-    data = await state.get_data()
-    n_es = data.get("count_espanol", 0)
-    n_ru = data.get("count_ruso", 0)
-
-    if n_es + n_ru < 1:
-        await callback_query.answer("⚠️ Necesitas al menos 1 quiz", show_alert=True)
-        return
-
-    await state.set_state(SurveyCreation.waiting_level)
-    await callback_query.message.edit_text(
-        f"📊 Tema: *{data['topic']}*\n"
-        f"📝 Quizzes: *{n_es}* en español, *{n_ru}* en ruso\n\n"
-        "¿Qué nivel?",
-        reply_markup=get_level_keyboard(),
         parse_mode="Markdown",
     )
     await callback_query.answer()
