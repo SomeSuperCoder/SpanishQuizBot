@@ -42,8 +42,9 @@ async def cmd_link(message: Message):
     await message.delete()
 
     await message.answer(
-        f"✅ Canal re-vinculado: {chat.title}\n\n"
-        "Ahora cualquier usuario puede crear y publicar encuestas en este canal."
+        f"✅ Canal vinculado: {chat.title}\n\n"
+        "Este canal ahora tiene encuestas automatizadas.\n\n"
+        "🤖 Creado por @somesupercoder"
     )
 
 
@@ -56,8 +57,9 @@ async def handle_bot_added_to_chat(update: ChatMemberUpdated, state: FSMContext)
         await BotConfigRepository.set("channel_id", str(chat.id))
         await BotConfigRepository.set("channel_title", chat.title or chat.username or str(chat.id))
         await update.answer(
-            f"✅ Canal configurado: {chat.title}\n\n"
-            "Ahora cualquier usuario puede crear y publicar encuestas en este canal."
+            f"✅ Canal vinculado: {chat.title}\n\n"
+            "Este canal ahora tiene encuestas automatizadas.\n\n"
+            "🤖 Creado por @somesupercoder"
         )
     else:
         await update.answer(
