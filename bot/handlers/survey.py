@@ -9,7 +9,7 @@ from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
 from aiogram.methods.send_rich_message import SendRichMessage
 from aiogram.types import (
     InputRichMessage, InputRichBlockThinking, InputRichBlockParagraph,
-    RichTextCustomEmoji,
+    RichTextCustomEmoji, MessageEntity,
 )
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
@@ -95,11 +95,17 @@ def _prefixed_question(quiz: Quiz, level: str) -> tuple[str, list]:
     """Add level emoji prefix to quiz question.
 
     Returns (question_text, entities) for use with question_entities.
+    The fallback emoji (1️⃣-6️⃣) is 3 UTF-16 code units each.
     """
     emoji_id, fallback = _LEVEL_EMOJI.get(level, ("0", "❓"))
-    # Use fallback char as the text representation, entity tells Telegram it's custom emoji
     text = f"{fallback} {quiz.question}"
-    entity = {"type": "custom_emoji", "offset": 0, "length": len(fallback), "custom_emoji_id": emoji_id}
+    utf16_len = len(fallback.encode("utf-16-le")) // 2
+    entity = MessageEntity(
+        type="custom_emoji",
+        offset=0,
+        length=utf16_len,
+        custom_emoji_id=emoji_id,
+    )
     return text, [entity]
 
 
@@ -112,6 +118,7 @@ async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
     await bot.send_poll(
         chat_id=target,
         question=question,
+        question_parse_mode=None,  # disable default HTML when using entities
         question_entities=entities,
         options=[{"text": opt} for opt in options],
         type="quiz",
@@ -869,6 +876,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             await callback_query.bot.send_poll(
                 chat_id=channel_id,
                 question=question,
+                question_parse_mode=None,
                 question_entities=entities,
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
@@ -994,6 +1002,7 @@ async def _run_scheduled_publish(
             await bot.send_poll(
                 chat_id=channel_id,
                 question=question,
+                question_parse_mode=None,
                 question_entities=entities,
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
