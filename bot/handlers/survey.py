@@ -5,6 +5,8 @@ import re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
+from aiogram.types import InputRichMessage, InputRichBlockThinking
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
@@ -179,15 +181,18 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     chat_id = callback_query.message.chat.id
 
     async def _update_thinking(stage: int, text: str) -> None:
-        """Edit the original message to show the current stage with progress."""
-        progress = "⬜" * stage + "⬛" * (3 - stage)
+        """Send a thinking draft to show the current stage with progress."""
+        progress = "⬛" * stage + "⬜" * (3 - stage)
         try:
-            await callback_query.message.edit_text(
-                f"{progress}\n{text}",
-                parse_mode="Markdown",
-            )
+            await callback_query.bot(SendRichMessageDraft(
+                chat_id=chat_id,
+                draft_id=stage,
+                rich_message=InputRichMessage(
+                    blocks=[InputRichBlockThinking(text=f"{progress}\n{text}")]
+                ),
+            ))
         except Exception:
-            pass  # message may already be deleted
+            pass  # private chat only; fail silently
 
     # ── Stage 1: Initial generation ─────────────────────────
     await callback_query.answer()
@@ -257,7 +262,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     await state.update_data(quizzes=quizzes_data)
     await state.set_state(SurveyCreation.reviewing)
 
-    # Delete the "Generando..." message first
+    # Delete the original button message (thinking draft auto-expires)
     try:
         await callback_query.message.delete()
     except Exception:
