@@ -76,9 +76,6 @@ async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
         pass  # private chat only; fail silently
 logger = logging.getLogger(__name__)
 
-COUNTER_MAX = 3
-
-
 # ── helpers ─────────────────────────────────────────────────
 
 
@@ -668,7 +665,7 @@ async def handle_counter_es(callback_query: CallbackQuery, state: FSMContext):
     current = counts.get(key, 0)
 
     if action == "+":
-        counts[key] = min(current + 1, COUNTER_MAX)
+        counts[key] = current + 1
     elif action == "-":
         counts[key] = max(current - 1, 0)
 
@@ -789,7 +786,7 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
     current = counts.get(key, 0)
 
     if action == "+":
-        counts[key] = min(current + 1, COUNTER_MAX)
+        counts[key] = current + 1
     elif action == "-":
         counts[key] = max(current - 1, 0)
 

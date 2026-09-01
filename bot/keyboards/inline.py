@@ -10,9 +10,6 @@ CATEGORIES = [
     {"key": "slang", "emoji": "🎭", "label": "EDUCADO / Slang"},
 ]
 
-COUNTER_MAX = 3
-
-
 # ── reusable counter component ──────────────────────────────
 
 

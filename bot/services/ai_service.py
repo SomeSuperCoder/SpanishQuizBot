@@ -194,7 +194,7 @@ class AIService:
     ) -> tuple[dict[str, int], dict[str, int]]:
         """
         Analyze the topic and examples to suggest category counts per language.
-        Returns (counts_es, counts_ru) with values 0-3 per category.
+        Returns (counts_es, counts_ru) with values 0+ per category.
         The AI decides what makes sense given the content.
         """
         system = (
@@ -206,7 +206,7 @@ class AIService:
             "- El JSON tiene esta forma:\n"
             '  {"espanol":{"fill_blank":2,"meaning":1,"synonyms":1,"slang":0},'
             '"ruso":{"fill_blank":1,"meaning":2,"synonyms":0,"slang":1}}\n'
-            "- Cada valor es un número entero entre 0 y 3\n"
+            "- Cada valor es un número entero >= 0 (sin máximo — elige la cantidad óptima)\n"
             "- El total por idioma debe ser al menos 1 (nunca 0 quizzes en un idioma)\n"
             "- Analiza las oraciones para decidir qué categorías encajan mejor:\n"
             "  - fill_blank: oraciones con vocabulario que se pueda ocultar\n"
@@ -258,7 +258,7 @@ class AIService:
             out = {}
             for key in defaults:
                 val = raw.get(key, defaults[key])
-                val = max(0, min(3, int(val)))  # clamp 0-3
+                val = max(0, int(val))  # no upper cap
                 out[key] = val
             if sum(out.values()) < 1:
                 # Ensure at least 1 total — set first category to 1
