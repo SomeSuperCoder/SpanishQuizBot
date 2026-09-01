@@ -112,13 +112,16 @@ class AIService:
         system = (
             "Eres un experto en enseñanza de español para rusohablantes.\n"
             "Recibes el texto de un mensaje reenviado de un canal de español.\n"
-            "Tu tarea: determinar el TEMA y extraer oraciones de ejemplo.\n\n"
+            "Tu tarea: determinar el TEMA y extraer TODAS las oraciones de ejemplo.\n\n"
             "REGLAS:\n"
             "- Responde SOLO con JSON válido, sin texto adicional\n"
             "- El JSON tiene esta forma:\n"
-            '  {"topic":"Subjuntivo presente","examples":["Ejemplo 1","Ejemplo 2"]}\n'
+            '  {"topic":"Subjuntivo presente","examples":["Oración 1","Oración 2",...]}\n'
             "- 'topic' = tema conciso (2-5 palabras)\n"
-            "- 'examples' = oraciones del mensaje que son buenos ejemplos del tema (mínimo 2, máximo 5)\n"
+            "- 'examples' = TODAS las oraciones/frases del mensaje que contengan español.\n"
+            "  Extrae CADA oración completa. No omitas ninguna.\n"
+            "  Si hay 10 oraciones, extrae las 10. Si hay 3, extrae las 3.\n"
+            "  Son la BASE para crear los quizzes, necesitamos todas.\n"
             "- Si el texto no contiene material de español: {\"topic\":\"NO_TOPIC\",\"examples\":[]}"
         )
         raw = await self._call_api_with_retry(system, text)
@@ -312,10 +315,12 @@ class AIService:
         if examples:
             examples_text = "\n".join(f"  - {e}" for e in examples)
             examples_section = (
-                f"\nEJEMPLOS DEL POST ORIGINAL (usa como referencia para crear los quizzes):\n"
-                f"{examples_text}\n"
-                f"Usa estas oraciones como base para las preguntas. Puedes modificarlas, "
-                f"completarlas con vacíos, o preguntar sobre su significado.\n"
+                f"\nORACIONES DEL POST ORIGINAL — ESTA ES LA BASE PRINCIPAL:\n"
+                f"{examples_text}\n\n"
+                f"REGLA CRÍTICA: El 60% de los quizzes DEBE venir de estas oraciones.\n"
+                f"Estas oraciones son elmaterial original del estudiante.\n"
+                f"Modifícalas, extrae vocabulario, crea vacíos, pregunta sobre su significado.\n"
+                f"El 40% restante pueden ser preguntas nuevas que complementen el tema.\n"
             )
 
         return (
