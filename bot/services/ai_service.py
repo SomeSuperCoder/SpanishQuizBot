@@ -277,7 +277,8 @@ class AIService:
                 if e.response.status_code == 429 and attempt < self.max_retries:
                     retry_after = e.response.headers.get("Retry-After")
                     delay = float(retry_after) if retry_after else self.base_delay * (2 ** attempt)
-                    logger.info("Rate limited, retrying in %ss (%d/%d)", delay, attempt + 1, self.max_retries)
+                    logger.warning("Rate limited (429), retrying in %ss (%d/%d)",
+                                   delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -285,7 +286,8 @@ class AIService:
                 last_exception = e
                 if attempt < self.max_retries:
                     delay = self.base_delay * (2 ** attempt)
-                    logger.info("Transient error, retrying in %ss (%d/%d)", delay, attempt + 1, self.max_retries)
+                    logger.warning("Transient error (%s: %s), retrying in %ss (%d/%d)",
+                                   type(e).__name__, e, delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
                 raise
