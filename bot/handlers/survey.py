@@ -180,7 +180,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 1: Initial generation ─────────────────────────
     try:
         await callback_query.message.edit_text(
-            f"🔄 Generando quizzes: creación inicial...\n"
+            f"🔄 Generando quizzes: creación inicial...\n\n"
             f"📊 {total_es} español + {total_ru} ruso"
         )
     except Exception:
@@ -209,7 +209,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 2: AI self-review ─────────────────────────────
     try:
         await callback_query.message.edit_text(
-            f"🔄 Generando quizzes: revisión...\n"
+            f"🔄 Generando quizzes: revisión...\n\n"
             f"📊 {total} quizzes — verificando calidad"
         )
     except Exception:
@@ -226,7 +226,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     if issues:
         try:
             await callback_query.message.edit_text(
-                f"🔄 Generando quizzes: corrección...\n"
+                f"🔄 Generando quizzes: corrección...\n\n"
                 f"🔧 {len(issues)} problema(s) encontrado(s)"
             )
         except Exception:
