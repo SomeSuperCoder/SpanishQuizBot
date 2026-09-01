@@ -53,6 +53,13 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_topic_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Escribir tema", callback_data="topic:manual")],
+        [InlineKeyboardButton(text="🔄 Reenviar post", callback_data="topic:auto")],
+    ])
+
+
 def get_level_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

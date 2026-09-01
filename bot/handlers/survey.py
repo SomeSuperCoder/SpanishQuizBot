@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
     get_start_keyboard,
+    get_topic_mode_keyboard,
     get_category_counter_keyboard,
     CATEGORIES,
     get_level_keyboard,
@@ -107,57 +108,107 @@ def _get_total(data: dict, lang: str) -> int:
 
 @router.callback_query(F.data == "create_survey")
 async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext):
-    """User clicked 'Crear encuesta' — ask for topic."""
-    await state.set_state(SurveyCreation.waiting_topic)
+    """User clicked 'Crear encuesta' — ask for topic mode."""
+    await state.set_state(SurveyCreation.waiting_topic_mode)
     await callback_query.message.edit_text(
-        "📝 ¡Genial! Vamos a crear quizzes.\n\n"
-        "¿Cuál es el tema?\n"
-        "(Ej: Imperfecto de subjuntivo, Ser vs Estar, Pretérito indefinido...)\n\n"
-        "💡 También puedes reenviar un mensaje de un canal y yo extraeré el tema."
+        "📝 Genial, vamos a crear una encuesta.\n\n"
+        "¿Cuál es el tema de tu encuesta?",
+        reply_markup=get_topic_mode_keyboard(),
     )
     await callback_query.answer()
 
 
-# ── topic → counter_es ──────────────────────────────────────
+# ── topic mode: manual or auto-detect ───────────────────────
 
 
-@router.message(SurveyCreation.waiting_topic)
-async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic (text or forwarded message) → show Spanish category counters."""
-    examples = []
+@router.callback_query(SurveyCreation.waiting_topic_mode, F.data == "topic:manual")
+async def handle_topic_manual_mode(callback_query: CallbackQuery, state: FSMContext):
+    """User chose manual input — wait for text."""
+    await state.set_state(SurveyCreation.waiting_topic_manual)
+    await callback_query.message.edit_text(
+        "✏️ Escribe el tema:\n"
+        "(Ej: Imperfecto de subjuntivo, Ser vs Estar, Pretérito indefinido...)"
+    )
+    await callback_query.answer()
 
-    # Check if message is forwarded
-    if message.forward_origin is not None:
-        text = message.text or message.caption or ""
-        if not text.strip():
-            await message.answer(
-                "⚠️ El mensaje reenviado no tiene texto.\n"
-                "Reenvía un mensaje que contenga texto sobre español."
-            )
-            return
 
-        loading = await message.answer("🔍 Analizando mensaje reenviado...")
-        try:
-            topic, examples = await ai.determine_topic(text)
-        except Exception:
-            logger.exception("Failed to determine topic from forwarded message")
-            await loading.edit_text(
-                "❌ No pude determinar el tema. Intenta escribirlo manualmente."
-            )
-            return
+@router.callback_query(SurveyCreation.waiting_topic_mode, F.data == "topic:auto")
+async def handle_topic_auto_mode(callback_query: CallbackQuery, state: FSMContext):
+    """User chose auto-detect — wait for forwarded message."""
+    await state.set_state(SurveyCreation.waiting_topic_forward)
+    await callback_query.message.edit_text(
+        "🔄 Reenvía un mensaje de un canal de español.\n"
+        "Yo extraeré el tema automáticamente."
+    )
+    await callback_query.answer()
 
-        if topic == "NO_TOPIC":
-            await loading.edit_text(
-                "⚠️ No encontré material de español en ese mensaje.\n"
-                "Escribe el tema manualmente o reenvía otro mensaje."
-            )
-            return
 
-        await loading.delete()
-    else:
-        topic = (message.text or "").strip()
-        if not topic:
-            return
+# ── topic: manual input ─────────────────────────────────────
+
+
+@router.message(SurveyCreation.waiting_topic_manual)
+async def handle_topic_manual(message: Message, state: FSMContext):
+    """Receive manual topic → show Spanish category counters."""
+    topic = (message.text or "").strip()
+    if not topic:
+        return
+
+    # Two SEPARATE dicts — never share the same object
+    counts_es = {c["key"]: 0 for c in CATEGORIES}
+    counts_ru = {c["key"]: 0 for c in CATEGORIES}
+    await state.update_data(
+        topic=topic, examples=[],
+        counts_es=counts_es, counts_ru=counts_ru
+    )
+    await state.set_state(SurveyCreation.waiting_counter_es)
+
+    data = await state.get_data()
+    await message.answer(
+        _get_counter_es_text(data),
+        reply_markup=get_category_counter_keyboard(_get_counts(data, "es")),
+        parse_mode="Markdown",
+    )
+
+
+# ── topic: forwarded message ────────────────────────────────
+
+
+@router.message(SurveyCreation.waiting_topic_forward)
+async def handle_topic_forward(message: Message, state: FSMContext):
+    """Receive forwarded message → extract topic via AI → show counters."""
+    if message.forward_origin is None:
+        await message.answer(
+            "⚠️ Necesito un mensaje reenviado.\n"
+            "Haz forward de un post de un canal de español."
+        )
+        return
+
+    text = message.text or message.caption or ""
+    if not text.strip():
+        await message.answer(
+            "⚠️ El mensaje reenviado no tiene texto.\n"
+            "Reenvía un mensaje que contenga texto sobre español."
+        )
+        return
+
+    loading = await message.answer("🔍 Analizando mensaje reenviado...")
+    try:
+        topic, examples = await ai.determine_topic(text)
+    except Exception:
+        logger.exception("Failed to determine topic from forwarded message")
+        await loading.edit_text(
+            "❌ No pude determinar el tema. Intenta escribirlo manualmente."
+        )
+        return
+
+    if topic == "NO_TOPIC":
+        await loading.edit_text(
+            "⚠️ No encontré material de español en ese mensaje.\n"
+            "Reenvía otro mensaje o escribe el tema manualmente."
+        )
+        return
+
+    await loading.delete()
 
     # Two SEPARATE dicts — never share the same object
     counts_es = {c["key"]: 0 for c in CATEGORIES}
