@@ -32,6 +32,46 @@ from bot.services.ai_service import AIService, AIServiceError, Quiz, AutoDetecte
 
 router = Router()
 ai = AIService()
+
+# ── Thinking draft helpers (AIActions emoji pack) ───────────
+
+_EMOJI_GENERATE = "5573473356579078196"
+_EMOJI_REVIEW = "5534951812081123354"
+_EMOJI_FIX = "5537581341383589905"
+_EMOJI_ANALYZE = "5537581341383589905"  # reuse fix emoji for analysis
+
+
+def _ce(custom_id: str, fallback: str) -> RichTextCustomEmoji:
+    """Create a custom emoji rich text entity."""
+    return RichTextCustomEmoji(custom_emoji_id=custom_id, alternative_text=fallback)
+
+
+async def _show_thinking(bot, chat_id: int, draft_id: int, emoji_id: str, fallback: str, text: str) -> None:
+    """Send a thinking draft to show the bot is working."""
+    try:
+        await bot(SendRichMessageDraft(
+            chat_id=chat_id,
+            draft_id=draft_id,
+            rich_message=InputRichMessage(
+                blocks=[InputRichBlockThinking(text=[_ce(emoji_id, fallback), text])]
+            ),
+        ))
+    except Exception:
+        pass  # private chat only; fail silently
+
+
+async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
+    """Dismiss the thinking draft by replacing it with a final message."""
+    try:
+        await bot(SendRichMessage(
+            chat_id=chat_id,
+            draft_id=draft_id,
+            rich_message=InputRichMessage(
+                blocks=[InputRichBlockParagraph(text="✅ Listo")]
+            ),
+        ))
+    except Exception:
+        pass  # private chat only; fail silently
 logger = logging.getLogger(__name__)
 
 COUNTER_MAX = 3
@@ -183,54 +223,19 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     dialect = data["dialect"]
     total = total_es + total_ru
     chat_id = callback_query.message.chat.id
-
-    # Custom emoji from AIActions pack
-    EMOJI_GENERATE = "5573473356579078196"
-    EMOJI_REVIEW = "5534951812081123354"
-    EMOJI_FIX = "5537581341383589905"
-
-    def _emoji(custom_id: str, fallback: str) -> RichTextCustomEmoji:
-        """Create a custom emoji rich text entity."""
-        return RichTextCustomEmoji(custom_emoji_id=custom_id, alternative_text=fallback)
-
-    async def _update_thinking(text_parts: list) -> None:
-        """Send a thinking draft to show the current stage."""
-        try:
-            await callback_query.bot(SendRichMessageDraft(
-                chat_id=chat_id,
-                draft_id=1,
-                rich_message=InputRichMessage(
-                    blocks=[InputRichBlockThinking(text=text_parts)]
-                ),
-            ))
-        except Exception:
-            pass  # private chat only; fail silently
-
-    async def _dismiss_thinking() -> None:
-        """Dismiss the thinking draft by replacing it with a final message."""
-        try:
-            await callback_query.bot(SendRichMessage(
-                chat_id=chat_id,
-                draft_id=1,
-                rich_message=InputRichMessage(
-                    blocks=[InputRichBlockParagraph(text="✅ Quizzes listos")]
-                ),
-            ))
-        except Exception:
-            pass  # private chat only; fail silently
+    bot = callback_query.bot
 
     # ── Stage 1: Initial generation ─────────────────────────
     await callback_query.answer()
-    await _update_thinking([
-        _emoji(EMOJI_GENERATE, "🔄"),
-        f" Generando {total_es} quizzes en español y {total_ru} en ruso...",
-    ])
+    await _show_thinking(bot, chat_id, 1, _EMOJI_GENERATE, "🔄",
+        f" Generando {total_es} quizzes en español y {total_ru} en ruso...")
 
     try:
         quizzes = await ai.generate_quizzes(
             topic, counts_es, counts_ru, level, dialect, examples=examples
         )
     except AIServiceError as e:
+        await _dismiss_thinking(bot, chat_id, 1)
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",
             reply_markup=get_start_keyboard(),
@@ -239,6 +244,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
     except Exception:
         logger.exception("Unexpected error generating quizzes")
+        await _dismiss_thinking(bot, chat_id, 1)
         await callback_query.message.edit_text(
             "❌ Error inesperado al generar los quizzes. Intenta de nuevo.",
             reply_markup=get_start_keyboard(),
@@ -247,10 +253,8 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
 
     # ── Stage 2: AI self-review ─────────────────────────────
-    await _update_thinking([
-        _emoji(EMOJI_REVIEW, "🔍"),
-        f" Revisión — verificando {total} quizzes",
-    ])
+    await _show_thinking(bot, chat_id, 1, _EMOJI_REVIEW, "🔍",
+        f" Revisión — verificando {total} quizzes")
 
     try:
         issues = await ai.review_quizzes(quizzes, topic, level, dialect)
@@ -261,10 +265,8 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 3: Fix issues ─────────────────────────────────
     fixed_count = 0
     if issues:
-        await _update_thinking([
-            _emoji(EMOJI_FIX, "🔧"),
-            f" Corrección — {len(issues)} problema(s) detectado(s)",
-        ])
+        await _show_thinking(bot, chat_id, 1, _EMOJI_FIX, "🔧",
+            f" Corrección — {len(issues)} problema(s) detectado(s)")
 
         history = [q.to_dict() for q in quizzes]
         for issue in issues:
@@ -294,7 +296,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     await state.set_state(SurveyCreation.reviewing)
 
     # Dismiss the thinking draft
-    await _dismiss_thinking()
+    await _dismiss_thinking(bot, chat_id, 1)
 
     # Delete the original button message
     try:
@@ -407,22 +409,27 @@ async def handle_topic_forward(message: Message, state: FSMContext):
         return
 
     loading = await message.answer("🔍 Analizando mensaje reenviado...")
+    await _show_thinking(message.bot, message.chat.id, 2, _EMOJI_ANALYZE, "🔍",
+        " Analizando mensaje reenviado...")
     try:
         detected = await ai.determine_topic(text)
     except Exception:
         logger.exception("Failed to determine topic from forwarded message")
+        await _dismiss_thinking(message.bot, message.chat.id, 2)
         await loading.edit_text(
             "❌ No pude determinar el tema. Intenta escribirlo manualmente."
         )
         return
 
     if detected.topic == "NO_TOPIC":
+        await _dismiss_thinking(message.bot, message.chat.id, 2)
         await loading.edit_text(
             "⚠️ No encontré material de español en ese mensaje.\n"
             "Reenvía otro mensaje o escribe el tema manualmente."
         )
         return
 
+    await _dismiss_thinking(message.bot, message.chat.id, 2)
     await loading.delete()
 
     # Two SEPARATE dicts — never share the same object
@@ -468,6 +475,8 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
     # Auto mode — ask AI to determine counts
     data = await state.get_data()
     loading = await callback_query.message.edit_text("🤖 Analizando contenido...")
+    await _show_thinking(callback_query.bot, callback_query.message.chat.id, 3, _EMOJI_ANALYZE, "🤖",
+        " Analizando contenido...")
 
     try:
         counts_es, counts_ru = await ai.determine_category_counts(
@@ -480,6 +489,7 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
         )
     except Exception:
         logger.exception("Failed to auto-determine category counts")
+        await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 3)
         await callback_query.message.edit_text(
             "❌ No pude autodeterminar las cantidades.\n"
             "Elige manualmente.",
@@ -488,6 +498,7 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
         await callback_query.answer()
         return
 
+    await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 3)
     await state.update_data(counts_es=counts_es, counts_ru=counts_ru)
 
     # Build summary
@@ -1029,6 +1040,8 @@ async def handle_improvement(message: Message, state: FSMContext):
     quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
     loading_msg = await message.answer(f"🔄 Regenerando quiz #{editing_id}...")
+    await _show_thinking(message.bot, message.chat.id, 4, _EMOJI_FIX, "🔧",
+        f" Regenerando quiz #{editing_id}...")
 
     # Build history for AI context
     history = [q.to_dict() for q in quizzes]
@@ -1036,6 +1049,7 @@ async def handle_improvement(message: Message, state: FSMContext):
     try:
         edited_quiz = await ai.edit_quiz(topic, history, editing_id, feedback)
     except AIServiceError as e:
+        await _dismiss_thinking(message.bot, message.chat.id, 4)
         await loading_msg.edit_text(
             f"❌ {e}\n\nVuelve a intentar.",
             reply_markup=get_edit_selector_keyboard(len(quizzes)),
@@ -1044,12 +1058,15 @@ async def handle_improvement(message: Message, state: FSMContext):
         return
     except Exception:
         logger.exception("Unexpected error editing quiz")
+        await _dismiss_thinking(message.bot, message.chat.id, 4)
         await loading_msg.edit_text(
             "❌ Error inesperado. Intenta de nuevo.",
             reply_markup=get_edit_selector_keyboard(len(quizzes)),
         )
         await state.set_state(SurveyCreation.reviewing)
         return
+
+    await _dismiss_thinking(message.bot, message.chat.id, 4)
 
     # Replace the edited quiz in the list
     edited_quiz.id = editing_id
