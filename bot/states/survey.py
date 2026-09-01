@@ -13,4 +13,5 @@ class SurveyCreation(StatesGroup):
     generating = State()
     reviewing = State()
     waiting_improvement = State()
+    waiting_schedule_interval = State()
     confirming = State()

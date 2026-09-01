@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -56,6 +57,64 @@ def _build_summary(quizzes: list[Quiz], level: str) -> str:
     for q in quizzes:
         lines.append(f"[{q.id}] {_prefixed_question(q, level)}")
     return "\n".join(lines)
+
+
+# ── schedule time parser ────────────────────────────────────
+
+
+def parse_interval(text: str) -> int | None:
+    """
+    Parse a time interval string into seconds.
+
+    Accepted formats:
+      "30s"  → 30 seconds
+      "5m"   → 300 seconds
+      "2h"   → 7200 seconds
+      "1h30m" → 5400 seconds
+      "2h15m30s" → 8130 seconds
+      "90"   → 90 seconds (bare number = seconds)
+
+    Returns None if the format is invalid.
+    """
+    text = text.strip().lower()
+    if not text:
+        return None
+
+    # Bare number → seconds
+    if text.isdigit():
+        secs = int(text)
+        return secs if secs > 0 else None
+
+    # Compound: e.g. 1h30m45s
+    pattern = r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$"
+    match = re.fullmatch(pattern, text)
+    if not match:
+        return None
+
+    h, m, s = match.groups()
+    total = 0
+    if h:
+        total += int(h) * 3600
+    if m:
+        total += int(m) * 60
+    if s:
+        total += int(s)
+
+    return total if total > 0 else None
+
+
+def format_interval(seconds: int) -> str:
+    """Human-readable interval: 30s, 5m, 1h30m."""
+    parts = []
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s:
+        parts.append(f"{s}s")
+    return "".join(parts) if parts else "0s"
 
 
 CATEGORY_LEGEND = (
@@ -705,7 +764,147 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
 
-# ── edit flow: select quiz → feedback → regenerate ─────────
+# ── schedule: ask for interval ──────────────────────────────
+
+
+@router.callback_query(SurveyCreation.reviewing, F.data == "survey_schedule")
+async def handle_schedule(callback_query: CallbackQuery, state: FSMContext):
+    """User wants to schedule publication — ask for interval."""
+    await state.set_state(SurveyCreation.waiting_schedule_interval)
+    await callback_query.message.edit_text(
+        "⏰ *Publicación gradual*\n\n"
+        "Escribe el intervalo de tiempo entre cada quiz.\n\n"
+        "Formatos:\n"
+        "  `30s` — 30 segundos\n"
+        "  `5m` — 5 minutos\n"
+        "  `1h` — 1 hora\n"
+        "  `1h30m` — 1 hora y 30 minutos\n"
+        "  `90` — 90 segundos (número solo = segundos)\n\n"
+        "Escribe el intervalo:",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+@router.message(SurveyCreation.waiting_schedule_interval)
+async def handle_schedule_interval(message: Message, state: FSMContext):
+    """Receive interval → validate → start background scheduler."""
+    interval = parse_interval(message.text)
+    if interval is None:
+        await message.answer(
+            "❌ Formato incorrecto.\n\n"
+            "Formatos válidos: `30s`, `5m`, `1h`, `1h30m`, `90`\n"
+            "Escribe el intervalo otra vez:",
+            reply_markup=get_cancel_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    level = data["level"]
+    dialect = data["dialect"]
+    topic = data["topic"]
+
+    channel_id = await BotConfigRepository.get_channel_id()
+    channel_title = await BotConfigRepository.get_channel_title()
+
+    if not channel_id:
+        await message.answer(
+            "⚠️ No hay canal configurado.\n\n"
+            "Un administrador debe añadir el bot a un canal primero.",
+            reply_markup=get_start_keyboard(),
+        )
+        await state.clear()
+        return
+
+    # Confirm and start
+    await state.set_state(SurveyCreation.generating)
+    await message.answer(
+        f"⏰ *Publicación programada*\n\n"
+        f"📊 {len(quizzes)} quizzes nivel {level} — {dialect}\n"
+        f"⏱️ Intervalo: {format_interval(interval)}\n"
+        f"📍 Canal: {channel_title or channel_id}\n\n"
+        f"🚀 Publicando el primero ahora...",
+        parse_mode="Markdown",
+    )
+
+    # Launch background scheduler
+    import asyncio
+    asyncio.create_task(
+        _run_scheduled_publish(
+            bot=message.bot,
+            channel_id=channel_id,
+            channel_title=channel_title,
+            quizzes=quizzes,
+            level=level,
+            dialect=dialect,
+            topic=topic,
+            interval=interval,
+            chat_id=message.chat.id,
+        )
+    )
+
+
+async def _run_scheduled_publish(
+    bot, channel_id: int, channel_title: str | None,
+    quizzes: list[Quiz], level: str, dialect: str, topic: str,
+    interval: int, chat_id: int,
+) -> None:
+    """Background task: publish quizzes one by one with a delay between each."""
+    import asyncio
+
+    published = 0
+    total = len(quizzes)
+
+    for i, quiz in enumerate(quizzes):
+        try:
+            await bot.send_poll(
+                chat_id=channel_id,
+                question=_prefixed_question(quiz, level),
+                options=[{"text": opt} for opt in quiz.options],
+                type="quiz",
+                correct_option_id=quiz.correct_index,
+                is_anonymous=True,
+            )
+            published = i + 1
+        except Exception:
+            logger.exception("Failed to publish quiz %d/%d", published + 1, total)
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Error al publicar quiz #{quiz.id}. "
+                         f"Publicados: {published}/{total}. "
+                         "Verifica que el bot sea administrador del canal.",
+                )
+            except Exception:
+                pass
+            return
+
+        # Progress update after each publish
+        if published < total:
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Publicado {published}/{total} — "
+                         f"próximo en {format_interval(interval)}",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
+    # Done
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"🚀 ¡{total} quizzes nivel {level} — {dialect} publicados!\n\n"
+                 f"📍 Canal: {channel_title or channel_id}\n"
+                 f"📊 Tema: {topic}",
+            reply_markup=get_start_keyboard(),
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(SurveyCreation.reviewing, F.data.startswith("edit_select:"))

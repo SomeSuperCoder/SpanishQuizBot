@@ -110,7 +110,10 @@ def get_review_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="✏️ Editar", callback_data="survey_edit"),
             InlineKeyboardButton(text="🚀 Publicar todos", callback_data="survey_publish"),
-        ]
+        ],
+        [
+            InlineKeyboardButton(text="⏰ Programar", callback_data="survey_schedule"),
+        ],
     ])
 
 
