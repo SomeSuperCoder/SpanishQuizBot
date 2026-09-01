@@ -124,8 +124,10 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
 async def handle_topic(message: Message, state: FSMContext):
     """Receive topic → show Spanish category counters."""
     topic = message.text.strip()
-    zero_counts = {c["key"]: 0 for c in CATEGORIES}
-    await state.update_data(topic=topic, counts_es=zero_counts, counts_ru=zero_counts)
+    # Two SEPARATE dicts — never share the same object
+    counts_es = {c["key"]: 0 for c in CATEGORIES}
+    counts_ru = {c["key"]: 0 for c in CATEGORIES}
+    await state.update_data(topic=topic, counts_es=counts_es, counts_ru=counts_ru)
     await state.set_state(SurveyCreation.waiting_counter_es)
 
     data = await state.get_data()
