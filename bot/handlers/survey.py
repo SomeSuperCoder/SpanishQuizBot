@@ -258,18 +258,24 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     await state.set_state(SurveyCreation.reviewing)
 
     # Send all polls as preview
-    await callback_query.message.delete()
     for quiz in quizzes:
-        await _send_quiz_preview(callback_query.message.chat.id, quiz, level, callback_query.bot)
+        await _send_quiz_preview(chat_id, quiz, level, callback_query.bot)
 
-    # Summary + action buttons
+    # Summary + action buttons (sent via bot.send_message to ensure correct order after polls)
     summary = _build_summary(quizzes, level)
     review_note = f"\n✅ Auto-revisión: {fixed_count} corrección(es)" if fixed_count else ""
-    await callback_query.message.answer(
+    await callback_query.bot.send_message(
+        chat_id,
         f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
         f"{summary}{review_note}\n\n¿Qué quieres hacer?",
         reply_markup=get_review_keyboard(),
     )
+
+    # Delete the original message (thinking draft auto-expires in ~30s)
+    try:
+        await callback_query.message.delete()
+    except Exception:
+        pass
 
 
 # ── /start & create ─────────────────────────────────────────
@@ -495,8 +501,7 @@ async def handle_category_accept(callback_query: CallbackQuery, state: FSMContex
             f"📊 Tema: *{data['topic']}*\n"
             f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n"
             f"📚 Nivel: *{level_label}* (detectado)\n"
-            f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
-            "🔄 Generando quizzes..."
+            f"🗣️ Dialecto: *{dialect_label}* (detectado)"
         )
         await callback_query.answer()
         await _generate_and_preview(callback_query, state)
@@ -616,8 +621,7 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
                 f"📊 Tema: *{data['topic']}*\n"
                 f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n"
                 f"📚 Nivel: *{level_label}* (detectado)\n"
-                f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
-                "🔄 Generando quizzes..."
+                f"🗣️ Dialecto: *{dialect_label}* (detectado)"
             )
             await callback_query.answer()
 
@@ -659,8 +663,7 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
                 f"📊 Tema: *{data['topic']}*\n"
                 f"📝 Total: *{total_es}* español + *0* ruso\n"
                 f"📚 Nivel: *{level_label}* (detectado)\n"
-                f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
-                "🔄 Generando quizzes..."
+                f"🗣️ Dialecto: *{dialect_label}* (detectado)"
             )
             await callback_query.answer()
             await _generate_and_preview(callback_query, state)
@@ -747,9 +750,6 @@ async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     total_ru = sum(counts_ru.values())
 
     await state.set_state(SurveyCreation.generating)
-    await callback_query.message.edit_text(
-        f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso..."
-    )
     await callback_query.answer()
 
     await _generate_and_preview(callback_query, state)
