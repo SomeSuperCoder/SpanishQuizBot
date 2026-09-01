@@ -131,7 +131,10 @@ def get_edit_done_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="✏️ Editar otro", callback_data="survey_edit"),
             InlineKeyboardButton(text="🚀 Publicar todos", callback_data="survey_publish"),
-        ]
+        ],
+        [
+            InlineKeyboardButton(text="⏰ Programar", callback_data="survey_schedule"),
+        ],
     ])
 
 
