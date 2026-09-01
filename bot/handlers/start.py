@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
-from aiogram.filters import CommandStart, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
+from aiogram.filters import Command, CommandStart, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
 from aiogram.fsm.context import FSMContext
 
 from bot.database.repository import UserRepository, BotConfigRepository
@@ -41,6 +41,25 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     )
 
     await callback_query.answer()
+
+
+@router.message(Command("link"))
+async def cmd_link(message: Message):
+    """Handle /link command in a channel — relink the channel and auto-delete."""
+    chat = message.chat
+    if chat.type != "channel":
+        await message.delete()
+        return
+
+    await BotConfigRepository.set("channel_id", str(chat.id))
+    await BotConfigRepository.set("channel_title", chat.title or chat.username or str(chat.id))
+
+    await message.delete()
+
+    await message.answer(
+        f"✅ Canal re-vinculado: {chat.title}\n\n"
+        "Ahora cualquier usuario puede crear y publicar encuestas en este canal."
+    )
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> IS_MEMBER))
