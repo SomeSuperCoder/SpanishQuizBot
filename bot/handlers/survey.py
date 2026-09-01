@@ -9,7 +9,7 @@ from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
 from aiogram.methods.send_rich_message import SendRichMessage
 from aiogram.types import (
     InputRichMessage, InputRichBlockThinking, InputRichBlockParagraph,
-    RichTextCustomEmoji, MessageEntity,
+    RichTextCustomEmoji,
 )
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
@@ -39,16 +39,6 @@ _EMOJI_GENERATE = "5534951812081123354"
 _EMOJI_REVIEW = "5537581341383589905"
 _EMOJI_FIX = "5537581341383589905"
 _EMOJI_ANALYZE = "5537581341383589905"  # reuse fix emoji for analysis
-
-# Level emoji (1-6 → A1-C2)
-_LEVEL_EMOJI = {
-    "A1": ("5217450769950737137", "1️⃣"),
-    "A2": ("5215574152710229930", "2️⃣"),
-    "B1": ("5215514710362855140", "3️⃣"),
-    "B2": ("5215227312626241463", "4️⃣"),
-    "C1": ("5217601248424925577", "5️⃣"),
-    "C2": ("5215366641365322506", "6️⃣"),
-}
 
 
 def _ce(custom_id: str, fallback: str) -> RichTextCustomEmoji:
@@ -91,35 +81,19 @@ COUNTER_MAX = 3
 # ── helpers ─────────────────────────────────────────────────
 
 
-def _prefixed_question(quiz: Quiz, level: str) -> tuple[str, list]:
-    """Add level emoji prefix to quiz question.
-
-    Returns (question_text, entities) for use with question_entities.
-    The fallback emoji (1️⃣-6️⃣) is 3 UTF-16 code units each.
-    """
-    emoji_id, fallback = _LEVEL_EMOJI.get(level, ("0", "❓"))
-    text = f"{fallback} {quiz.question}"
-    utf16_len = len(fallback.encode("utf-16-le")) // 2
-    entity = MessageEntity(
-        type="custom_emoji",
-        offset=0,
-        length=utf16_len,
-        custom_emoji_id=emoji_id,
-    )
-    return text, [entity]
+def _prefixed_question(quiz: Quiz, level: str) -> str:
+    """Add level prefix to quiz question."""
+    return f"[{level}] {quiz.question}"
 
 
 async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
-    """Send a real Telegram quiz poll with level emoji prefix."""
+    """Send a real Telegram quiz poll with level prefix."""
     # Telegram allows max 10 options per poll
     options = quiz.options[:10]
     correct = min(quiz.correct_index, len(options) - 1)
-    question, entities = _prefixed_question(quiz, level)
     await bot.send_poll(
         chat_id=target,
-        question=question,
-        question_parse_mode=None,  # disable default HTML when using entities
-        question_entities=entities,
+        question=_prefixed_question(quiz, level),
         options=[{"text": opt} for opt in options],
         type="quiz",
         correct_option_id=correct,
@@ -131,8 +105,7 @@ def _build_summary(quizzes: list[Quiz], level: str) -> str:
     """Build the [n] summary shown in the review message."""
     lines = []
     for q in quizzes:
-        emoji_id, fallback = _LEVEL_EMOJI.get(level, ("0", "❓"))
-        lines.append(f"[{q.id}] {fallback} {q.question}")
+        lines.append(f"[{q.id}] {_prefixed_question(q, level)}")
     return "\n".join(lines)
 
 
@@ -872,12 +845,9 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
 
     try:
         for quiz in quizzes:
-            question, entities = _prefixed_question(quiz, level)
             await callback_query.bot.send_poll(
                 chat_id=channel_id,
-                question=question,
-                question_parse_mode=None,
-                question_entities=entities,
+                question=_prefixed_question(quiz, level),
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
                 correct_option_id=quiz.correct_index,
@@ -998,12 +968,9 @@ async def _run_scheduled_publish(
 
     for i, quiz in enumerate(quizzes):
         try:
-            question, entities = _prefixed_question(quiz, level)
             await bot.send_poll(
                 chat_id=channel_id,
-                question=question,
-                question_parse_mode=None,
-                question_entities=entities,
+                question=_prefixed_question(quiz, level),
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
                 correct_option_id=quiz.correct_index,
