@@ -9,6 +9,8 @@ from bot.database.repository import UserRepository, SurveyRepository, BotConfigR
 from bot.keyboards.inline import (
     get_start_keyboard,
     get_topic_mode_keyboard,
+    get_category_mode_keyboard,
+    get_category_auto_confirm_keyboard,
     get_category_counter_keyboard,
     CATEGORIES,
     get_level_keyboard,
@@ -269,14 +271,130 @@ async def handle_topic_forward(message: Message, state: FSMContext):
         counts_es=counts_es, counts_ru=counts_ru,
         auto_level=detected.level, auto_dialect=detected.dialect,
     )
-    await state.set_state(SurveyCreation.waiting_counter_es)
+    await state.set_state(SurveyCreation.waiting_category_mode)
 
-    data = await state.get_data()
     await message.answer(
-        _get_counter_es_text(data),
-        reply_markup=get_category_counter_keyboard(_get_counts(data, "es"), show_skip=True),
+        f"📊 *Tema detectado:* {detected.topic}\n"
+        f"📚 *Nivel:* {detected.level} 🔍\n"
+        f"🗣️ *Dialecto:* {detected.dialect} 🔍\n\n"
+        f"¿Cómo quieres elegir las cantidades de quizzes?",
+        reply_markup=get_category_mode_keyboard(),
         parse_mode="Markdown",
     )
+
+
+# ── category_mode: manual or auto ──────────────────────────
+
+
+@router.callback_query(SurveyCreation.waiting_category_mode, F.data.startswith("category_mode:"))
+async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext):
+    """User chose manual or auto category counts."""
+    mode = callback_query.data.split(":")[1]
+
+    if mode == "manual":
+        # Go to Spanish counter as before
+        await state.set_state(SurveyCreation.waiting_counter_es)
+        data = await state.get_data()
+        await callback_query.message.edit_text(
+            _get_counter_es_text(data),
+            reply_markup=get_category_counter_keyboard(_get_counts(data, "es"), show_skip=True),
+            parse_mode="Markdown",
+        )
+        await callback_query.answer()
+        return
+
+    # Auto mode — ask AI to determine counts
+    data = await state.get_data()
+    loading = await callback_query.message.edit_text("🤖 Analizando contenido...")
+
+    try:
+        counts_es, counts_ru = await ai.determine_category_counts(
+            topic=data["topic"],
+            examples=data.get("examples", []),
+            count_es=_get_counts(data, "es"),
+            count_ru=_get_counts(data, "ru"),
+            level=data.get("level", "A1"),
+            dialect=data.get("dialect", "Castellano"),
+        )
+    except Exception:
+        logger.exception("Failed to auto-determine category counts")
+        await callback_query.message.edit_text(
+            "❌ No pude autodeterminar las cantidades.\n"
+            "Elige manualmente.",
+            reply_markup=get_category_mode_keyboard(),
+        )
+        await callback_query.answer()
+        return
+
+    await state.update_data(counts_es=counts_es, counts_ru=counts_ru)
+
+    # Build summary
+    def _counts_text(counts: dict[str, int], lang: str) -> str:
+        items = []
+        for cat in CATEGORIES:
+            n = counts.get(cat["key"], 0)
+            if n > 0:
+                items.append(f"  {cat['emoji']} {cat['label']}: {n}")
+        total = sum(counts.values())
+        return f"*{lang}* ({total} quizzes):\n" + "\n".join(items) if items else f"*{lang}*: (ninguno)"
+
+    summary = (
+        f"📊 *Cantidades sugeridas:*\n\n"
+        f"{_counts_text(counts_es, 'Español')}\n\n"
+        f"{_counts_text(counts_ru, 'Ruso')}\n\n"
+        "¿Estás de acuerdo?"
+    )
+
+    await callback_query.message.edit_text(
+        summary,
+        reply_markup=get_category_auto_confirm_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+# ── category_mode: accept auto-detected counts ──────────────
+
+
+@router.callback_query(SurveyCreation.waiting_category_mode, F.data == "category_mode:accept")
+async def handle_category_accept(callback_query: CallbackQuery, state: FSMContext):
+    """User accepted auto-detected counts → move to level/dialect."""
+    data = await state.get_data()
+    total_es = _get_total(data, "es")
+    total_ru = _get_total(data, "ru")
+
+    # Check if level/dialect were auto-detected
+    auto_level = data.get("auto_level")
+    auto_dialect = data.get("auto_dialect")
+
+    if auto_level and auto_dialect:
+        await state.update_data(level=auto_level, dialect=auto_dialect)
+        await state.set_state(SurveyCreation.generating)
+
+        level_label = f"{auto_level} 🔍"
+        dialect_label = f"{auto_dialect} 🔍"
+
+        await callback_query.message.edit_text(
+            f"📊 Tema: *{data['topic']}*\n"
+            f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n"
+            f"📚 Nivel: *{level_label}* (detectado)\n"
+            f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
+            "🔄 Generando quizzes..."
+        )
+        await callback_query.answer()
+        await _generate_and_preview(callback_query, state)
+        return
+
+    # Manual mode — ask for level
+    await state.set_state(SurveyCreation.waiting_level)
+    await callback_query.message.edit_text(
+        f"📊 Tema: *{data['topic']}*\n"
+        f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n\n"
+        "¿Qué nivel?",
+        reply_markup=get_level_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
 
 
 # ── counter_es: Spanish categories ──────────────────────────

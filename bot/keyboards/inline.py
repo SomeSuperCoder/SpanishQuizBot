@@ -68,6 +68,20 @@ def get_topic_mode_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_category_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Elegir manualmente", callback_data="category_mode:manual")],
+        [InlineKeyboardButton(text="🤖 Autodeterminar", callback_data="category_mode:auto")],
+    ])
+
+
+def get_category_auto_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Aceptar", callback_data="category_mode:accept")],
+        [InlineKeyboardButton(text="✏️ Elegir manualmente", callback_data="category_mode:manual")],
+    ])
+
+
 def get_level_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

@@ -176,6 +176,87 @@ class AIService:
 
         return AutoDetected(topic=topic, examples=examples, level=level, dialect=dialect)
 
+    async def determine_category_counts(
+        self, topic: str, examples: list[str],
+        count_es: dict[str, int], count_ru: dict[str, int],
+        level: str, dialect: str,
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        """
+        Analyze the topic and examples to suggest category counts per language.
+        Returns (counts_es, counts_ru) with values 0-3 per category.
+        The AI decides what makes sense given the content.
+        """
+        system = (
+            "Eres un experto en crear quizzes de español para rusohablantes.\n"
+            "Recibes un tema, oraciones de ejemplo, y las cantidades actuales por categoría.\n"
+            "Tu tarea: sugerir las cantidades óptimas de quizzes por categoría e idioma.\n\n"
+            "REGLAS:\n"
+            "- Responde SOLO con JSON válido, sin texto adicional\n"
+            "- El JSON tiene esta forma:\n"
+            '  {"espanol":{"fill_blank":2,"meaning":1,"synonyms":1,"slang":0},'
+            '"ruso":{"fill_blank":1,"meaning":2,"synonyms":0,"slang":1}}\n'
+            "- Cada valor es un número entero entre 0 y 3\n"
+            "- El total por idioma debe ser al menos 1 (nunca 0 quizzes en un idioma)\n"
+            "- Analiza las oraciones para decidir qué categorías encajan mejor:\n"
+            "  - fill_blank: oraciones con vocabulario que se pueda ocultar\n"
+            "  - meaning: expresiones con significado contextual\n"
+            "  - synonyms: palabras que tengan sinónimos/antónimos claros\n"
+            "  - slang: expresiones coloquiales o informales\n"
+            "- Si el contenido no permite ciertas categorías, pon 0\n"
+            "- Diversifica: no pongas todo en una sola categoría"
+        )
+        examples_text = "\n".join(f"  - {e}" for e in examples[:20]) if examples else "(sin ejemplos)"
+        user = (
+            f"Tema: {topic}\n"
+            f"Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Oraciones de ejemplo:\n{examples_text}\n\n"
+            f"Cantidades actuales:\n"
+            f"  Español: {count_es}\n"
+            f"  Ruso: {count_ru}\n\n"
+            "Sugerencias las cantidades óptimas de quizzes por categoría e idioma."
+        )
+        raw = await self._call_api_with_retry(system, user)
+
+        # Parse JSON
+        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
+        try:
+            data = json.loads(cleaned)
+            return self._parse_category_counts(data, count_es, count_ru)
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            pass
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+                return self._parse_category_counts(data, count_es, count_ru)
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                pass
+
+        # Fallback: return original counts unchanged
+        return count_es, count_ru
+
+    @staticmethod
+    def _parse_category_counts(
+        data: dict, default_es: dict[str, int], default_ru: dict[str, int]
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        raw_es = data.get("espanol", {})
+        raw_ru = data.get("ruso", {})
+
+        def _valid(raw: dict, defaults: dict[str, int]) -> dict[str, int]:
+            out = {}
+            for key in defaults:
+                val = raw.get(key, defaults[key])
+                val = max(0, min(3, int(val)))  # clamp 0-3
+                out[key] = val
+            if sum(out.values()) < 1:
+                # Ensure at least 1 total — set first category to 1
+                first_key = list(out.keys())[0]
+                out[first_key] = 1
+            return out
+
+        return _valid(raw_es, default_es), _valid(raw_ru, default_ru)
+
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> Quiz:
