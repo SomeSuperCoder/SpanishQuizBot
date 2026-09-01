@@ -62,6 +62,8 @@ def _get_counter_text(data: dict) -> str:
     return (
         f"📊 Tema: *{topic}*\n\n"
         f"¿Cuántas encuestas quieres crear?\n"
+        f"🇪🇸 Cuestion en español: *{n_es}*\n"
+        f"🇷🇺 Cuestion en ruso: *{n_ru}*\n\n"
         f"Usa las flechas para ajustar:"
     )
 
@@ -69,8 +71,8 @@ def _get_counter_text(data: dict) -> str:
 def _build_counters(data: dict) -> dict[str, tuple[str, int]]:
     """Build counter dict from FSM data."""
     return {
-        "espanol": ("Cuestion en español", data.get("count_espanol", 0)),
-        "ruso": ("Cuestion en ruso", data.get("count_ruso", 0)),
+        "espanol": ("🇪🇸", data.get("count_espanol", 0)),
+        "ruso": ("🇷🇺", data.get("count_ruso", 0)),
     }
 
 

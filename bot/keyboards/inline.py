@@ -7,28 +7,26 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def get_counter_keyboard(
     counters: dict[str, tuple[str, int]],
     min_total: int = 1,
-    max_value: int = 3,
     confirm_callback: str = "counter:ok",
 ) -> InlineKeyboardMarkup:
     """
     Reusable counter keyboard.
 
     counters = {
-        "key": ("Label shown to user", current_value),
+        "key": ("emoji", current_value),
         ...
     }
     min_total: minimum combined value across all counters to enable confirm
-    max_value: maximum value per counter (inclusive)
     """
     rows = []
-    for key, (label, value) in counters.items():
+    for key, (emoji, value) in counters.items():
         rows.append([
             InlineKeyboardButton(
                 text="◀️",
                 callback_data=f"counter:{key}:-",
             ),
             InlineKeyboardButton(
-                text=f"{label} — {value}",
+                text=f"{emoji} {value}",
                 callback_data=f"counter:{key}:show",
             ),
             InlineKeyboardButton(
