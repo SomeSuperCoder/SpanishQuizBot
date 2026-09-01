@@ -43,7 +43,7 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     await callback_query.answer()
 
 
-@router.message(Command("link"))
+@router.channel_post(Command("link"))
 async def cmd_link(message: Message):
     """Handle /link command in a channel — relink the channel and auto-delete."""
     chat = message.chat

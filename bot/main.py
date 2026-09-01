@@ -58,7 +58,10 @@ async def _async_main():
     dp.include_router(callbacks_router)
 
     logger.info("Bot starting...")
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot,
+        allowed_updates=["message", "callback_query", "my_chat_member", "channel_post"],
+    )
 
 
 def main():
