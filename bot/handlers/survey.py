@@ -408,7 +408,6 @@ async def handle_topic_forward(message: Message, state: FSMContext):
         )
         return
 
-    loading = await message.answer("🔍 Analizando mensaje reenviado...")
     await _show_thinking(message.bot, message.chat.id, 2, _EMOJI_ANALYZE, "🔍",
         " Analizando mensaje reenviado...")
     try:
@@ -416,21 +415,20 @@ async def handle_topic_forward(message: Message, state: FSMContext):
     except Exception:
         logger.exception("Failed to determine topic from forwarded message")
         await _dismiss_thinking(message.bot, message.chat.id, 2)
-        await loading.edit_text(
+        await message.answer(
             "❌ No pude determinar el tema. Intenta escribirlo manualmente."
         )
         return
 
     if detected.topic == "NO_TOPIC":
         await _dismiss_thinking(message.bot, message.chat.id, 2)
-        await loading.edit_text(
+        await message.answer(
             "⚠️ No encontré material de español en ese mensaje.\n"
             "Reenvía otro mensaje o escribe el tema manualmente."
         )
         return
 
     await _dismiss_thinking(message.bot, message.chat.id, 2)
-    await loading.delete()
 
     # Two SEPARATE dicts — never share the same object
     counts_es = {c["key"]: 0 for c in CATEGORIES}
@@ -474,7 +472,6 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
 
     # Auto mode — ask AI to determine counts
     data = await state.get_data()
-    loading = await callback_query.message.edit_text("🤖 Analizando contenido...")
     await _show_thinking(callback_query.bot, callback_query.message.chat.id, 3, _EMOJI_ANALYZE, "🤖",
         " Analizando contenido...")
 
@@ -1039,7 +1036,6 @@ async def handle_improvement(message: Message, state: FSMContext):
     editing_id = data["editing_id"]
     quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
-    loading_msg = await message.answer(f"🔄 Regenerando quiz #{editing_id}...")
     await _show_thinking(message.bot, message.chat.id, 4, _EMOJI_FIX, "🔧",
         f" Regenerando quiz #{editing_id}...")
 
@@ -1050,7 +1046,7 @@ async def handle_improvement(message: Message, state: FSMContext):
         edited_quiz = await ai.edit_quiz(topic, history, editing_id, feedback)
     except AIServiceError as e:
         await _dismiss_thinking(message.bot, message.chat.id, 4)
-        await loading_msg.edit_text(
+        await message.answer(
             f"❌ {e}\n\nVuelve a intentar.",
             reply_markup=get_edit_selector_keyboard(len(quizzes)),
         )
@@ -1059,7 +1055,7 @@ async def handle_improvement(message: Message, state: FSMContext):
     except Exception:
         logger.exception("Unexpected error editing quiz")
         await _dismiss_thinking(message.bot, message.chat.id, 4)
-        await loading_msg.edit_text(
+        await message.answer(
             "❌ Error inesperado. Intenta de nuevo.",
             reply_markup=get_edit_selector_keyboard(len(quizzes)),
         )
