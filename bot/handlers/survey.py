@@ -285,9 +285,10 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     """User clicked 'Crear encuesta' — ask for topic mode."""
     await state.set_state(SurveyCreation.waiting_topic_mode)
     await callback_query.message.edit_text(
-        "📝 Genial, vamos a crear una encuesta.\n\n"
-        "¿Cuál es el tema de tu encuesta?",
+        "📝 *Crear encuesta*\n\n"
+        "Elige cómo quieres definir el tema de tus quizzes:",
         reply_markup=get_topic_mode_keyboard(),
+        parse_mode="Markdown",
     )
     await callback_query.answer()
 
