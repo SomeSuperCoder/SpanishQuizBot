@@ -88,12 +88,15 @@ def _prefixed_question(quiz: Quiz, level: str) -> str:
 
 async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
     """Send a real Telegram quiz poll with [level] prefix."""
+    # Telegram allows max 10 options per poll
+    options = quiz.options[:10]
+    correct = min(quiz.correct_index, len(options) - 1)
     await bot.send_poll(
         chat_id=target,
         question=_prefixed_question(quiz, level),
-        options=[{"text": opt} for opt in quiz.options],
+        options=[{"text": opt} for opt in options],
         type="quiz",
-        correct_option_id=quiz.correct_index,
+        correct_option_id=correct,
         is_anonymous=False,
     )
 
@@ -473,6 +476,7 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
 
     # Auto mode — ask AI to determine counts
     data = await state.get_data()
+    await callback_query.answer()  # Answer immediately before AI call
     await _show_thinking(callback_query.bot, callback_query.message.chat.id, 3, _EMOJI_ANALYZE, "🤖",
         " Analizando contenido...")
 
@@ -493,7 +497,6 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
             "Elige manualmente.",
             reply_markup=get_category_mode_keyboard(),
         )
-        await callback_query.answer()
         return
 
     await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 3)
@@ -521,7 +524,6 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
         reply_markup=get_category_auto_confirm_keyboard(),
         parse_mode="Markdown",
     )
-    await callback_query.answer()
 
 
 # ── category_mode: accept auto-detected counts ──────────────
