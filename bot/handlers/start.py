@@ -5,7 +5,6 @@ from aiogram.fsm.context import FSMContext
 
 from bot.database.repository import UserRepository, BotConfigRepository
 from bot.keyboards.inline import get_start_keyboard
-from bot.states.survey import SurveyCreation
 
 router = Router()
 
@@ -27,20 +26,6 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
     await message.answer(welcome_text, reply_markup=get_start_keyboard())
-
-
-@router.callback_query(F.data == "create_survey")
-async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext):
-    """Handle create_survey button - start survey creation flow."""
-    await state.set_state(SurveyCreation.waiting_topic)
-
-    await callback_query.message.edit_text(
-        "📝 Genial, vamos a crear una encuesta.\n\n"
-        "¿Cuál es el tema de tu encuesta?",
-        reply_markup=None
-    )
-
-    await callback_query.answer()
 
 
 @router.channel_post(Command("link"))
