@@ -124,6 +124,8 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
     """Receive topic (text or forwarded message) → show Spanish category counters."""
+    examples = []
+
     # Check if message is forwarded
     if message.forward_origin is not None:
         text = message.text or message.caption or ""
@@ -136,7 +138,7 @@ async def handle_topic(message: Message, state: FSMContext):
 
         loading = await message.answer("🔍 Analizando mensaje reenviado...")
         try:
-            topic = await ai.determine_topic(text)
+            topic, examples = await ai.determine_topic(text)
         except Exception:
             logger.exception("Failed to determine topic from forwarded message")
             await loading.edit_text(
@@ -160,7 +162,10 @@ async def handle_topic(message: Message, state: FSMContext):
     # Two SEPARATE dicts — never share the same object
     counts_es = {c["key"]: 0 for c in CATEGORIES}
     counts_ru = {c["key"]: 0 for c in CATEGORIES}
-    await state.update_data(topic=topic, counts_es=counts_es, counts_ru=counts_ru)
+    await state.update_data(
+        topic=topic, examples=examples,
+        counts_es=counts_es, counts_ru=counts_ru
+    )
     await state.set_state(SurveyCreation.waiting_counter_es)
 
     data = await state.get_data()
@@ -308,6 +313,7 @@ async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     dialect = callback_query.data.split(":")[1]
     data = await state.get_data()
     topic = data["topic"]
+    examples = data.get("examples", [])
     counts_es = _get_counts(data, "es")
     counts_ru = _get_counts(data, "ru")
     total_es = sum(counts_es.values())
@@ -322,7 +328,9 @@ async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
     try:
-        quizzes = await ai.generate_quizzes(topic, counts_es, counts_ru, level, dialect)
+        quizzes = await ai.generate_quizzes(
+            topic, counts_es, counts_ru, level, dialect, examples=examples
+        )
     except AIServiceError as e:
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",

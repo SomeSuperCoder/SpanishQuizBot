@@ -56,18 +56,18 @@ class AIService:
 
     async def generate_quizzes(
         self, topic: str, count_es: dict[str, int], count_ru: dict[str, int],
-        level: str, dialect: str
+        level: str, dialect: str, examples: list[str] | None = None
     ) -> list[Quiz]:
         """
         Generate quizzes with per-category counts.
         count_es = {"fill_blank": 2, "meaning": 1, "synonyms": 0, "slang": 1}
         count_ru = {"fill_blank": 1, "meaning": 2, "synonyms": 1, "slang": 0}
+        examples = optional list of example sentences from the original post
         """
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
-        total = total_es + total_ru
 
-        system = self._system_prompt_generate(count_es, count_ru, level, dialect)
+        system = self._system_prompt_generate(count_es, count_ru, level, dialect, examples)
         user = f"Crea quizzes sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
@@ -107,26 +107,43 @@ class AIService:
 
         return all_quizzes
 
-    async def determine_topic(self, text: str) -> str:
-        """Extract the Spanish-learning topic from a forwarded message."""
+    async def determine_topic(self, text: str) -> tuple[str, list[str]]:
+        """Extract the topic and example sentences from a forwarded message."""
         system = (
             "Eres un experto en enseñanza de español para rusohablantes.\n"
             "Recibes el texto de un mensaje reenviado de un canal de español.\n"
-            "Tu tarea: determinar el TEMA sobre el cual se pueden crear quizzes de español.\n\n"
+            "Tu tarea: determinar el TEMA y extraer oraciones de ejemplo.\n\n"
             "REGLAS:\n"
-            "- Responde SOLO con el tema, sin explicaciones, sin comillas, sin formato\n"
-            "- El tema debe ser conciso (2-5 palabras)\n"
-            "- Ejemplos de temas válidos:\n"
-            "  'Pretérito indefinido'\n"
-            "  'Ser vs Estar'\n"
-            "  'Subjuntivo presente'\n"
-            "  'Vocabulario de comida'\n"
-            "  'Expresiones coloquiales'\n"
-            "- Si el texto no contiene material de español, responde: NO_TOPIC"
+            "- Responde SOLO con JSON válido, sin texto adicional\n"
+            "- El JSON tiene esta forma:\n"
+            '  {"topic":"Subjuntivo presente","examples":["Ejemplo 1","Ejemplo 2"]}\n'
+            "- 'topic' = tema conciso (2-5 palabras)\n"
+            "- 'examples' = oraciones del mensaje que son buenos ejemplos del tema (mínimo 2, máximo 5)\n"
+            "- Si el texto no contiene material de español: {\"topic\":\"NO_TOPIC\",\"examples\":[]}"
         )
         raw = await self._call_api_with_retry(system, text)
-        topic = raw.strip().strip('"').strip("'").strip()
-        return topic if topic else "NO_TOPIC"
+
+        # Parse JSON
+        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
+        try:
+            data = json.loads(cleaned)
+            topic = str(data.get("topic", "NO_TOPIC")).strip()
+            examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
+            return topic, examples
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            # Try regex fallback
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                    topic = str(data.get("topic", "NO_TOPIC")).strip()
+                    examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
+                    return topic, examples
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                    pass
+            # Last resort: treat whole response as topic
+            topic = raw.strip().strip('"').strip("'").strip()
+            return (topic if topic else "NO_TOPIC"), []
 
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
@@ -274,7 +291,8 @@ class AIService:
     # ── prompts ─────────────────────────────────────────────
 
     def _system_prompt_generate(
-        self, count_es: dict[str, int], count_ru: dict[str, int], level: str, dialect: str
+        self, count_es: dict[str, int], count_ru: dict[str, int], level: str,
+        dialect: str, examples: list[str] | None = None
     ) -> str:
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
@@ -290,6 +308,16 @@ class AIService:
         es_list = _cat_list(count_es, "español")
         ru_list = _cat_list(count_ru, "ruso")
 
+        examples_section = ""
+        if examples:
+            examples_text = "\n".join(f"  - {e}" for e in examples)
+            examples_section = (
+                f"\nEJEMPLOS DEL POST ORIGINAL (usa como referencia para crear los quizzes):\n"
+                f"{examples_text}\n"
+                f"Usa estas oraciones como base para las preguntas. Puedes modificarlas, "
+                f"completarlas con vacíos, o preguntar sobre su significado.\n"
+            )
+
         return (
             "Eres un experto en crear quizzes de español para estudiantes rusohablantes.\n\n"
             f"Categorías de quiz:\n"
@@ -301,7 +329,8 @@ class AIService:
             f"En ESPAÑOL ({total_es}):\n{es_list}\n\n"
             f"En RUSO ({total_ru}):\n{ru_list}\n\n"
             f"Nivel: {level}\n"
-            f"Dialecto: {dialect}\n\n"
+            f"Dialecto: {dialect}\n"
+            f"{examples_section}\n"
             "REGLAS:\n"
             "- Responde SOLO con un JSON válido, sin texto adicional\n"
             "- El JSON tiene esta forma exacta:\n"
