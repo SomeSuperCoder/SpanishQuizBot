@@ -5,6 +5,8 @@ import re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
+from aiogram.types import InputRichMessage, InputRichBlockThinking
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
@@ -176,15 +178,23 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     level = data["level"]
     dialect = data["dialect"]
     total = total_es + total_ru
+    chat_id = callback_query.message.chat.id
+
+    async def _send_thinking(text: str, draft_id: int = 1) -> None:
+        """Send a RichBlockThinking draft to show the bot is working."""
+        try:
+            await callback_query.bot(SendRichMessageDraft(
+                chat_id=chat_id,
+                draft_id=draft_id,
+                rich_message=InputRichMessage(
+                    blocks=[InputRichBlockThinking(text=text)]
+                ),
+            ))
+        except Exception:
+            pass  # private chat only; fail silently
 
     # ── Stage 1: Initial generation ─────────────────────────
-    try:
-        await callback_query.message.edit_text(
-            f"🔄 Generando quizzes: creación inicial...\n\n"
-            f"📊 {total_es} español + {total_ru} ruso"
-        )
-    except Exception:
-        pass  # message might already be deleted
+    await _send_thinking(f"🔄 Creación inicial — {total_es} español + {total_ru} ruso")
 
     try:
         quizzes = await ai.generate_quizzes(
@@ -207,13 +217,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
 
     # ── Stage 2: AI self-review ─────────────────────────────
-    try:
-        await callback_query.message.edit_text(
-            f"🔄 Generando quizzes: revisión...\n\n"
-            f"📊 {total} quizzes — verificando calidad"
-        )
-    except Exception:
-        pass
+    await _send_thinking(f"🔍 Revisión — verificando {total} quizzes")
 
     try:
         issues = await ai.review_quizzes(quizzes, topic, level, dialect)
@@ -224,13 +228,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 3: Fix issues ─────────────────────────────────
     fixed_count = 0
     if issues:
-        try:
-            await callback_query.message.edit_text(
-                f"🔄 Generando quizzes: corrección...\n\n"
-                f"🔧 {len(issues)} problema(s) encontrado(s)"
-            )
-        except Exception:
-            pass
+        await _send_thinking(f"🔧 Corrección — {len(issues)} problema(s) detectado(s)")
 
         history = [q.to_dict() for q in quizzes]
         for issue in issues:
@@ -241,17 +239,14 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
             if not quiz_id or not fix_data:
                 continue
 
-            # Build a feedback string that describes the fix
             feedback = f"Corregir: {fix_desc}. Usar esta versión: {json.dumps(fix_data, ensure_ascii=False)}"
 
             try:
                 edited = await ai.edit_quiz(topic, history, quiz_id, feedback)
-                # Replace in list
                 for i, q in enumerate(quizzes):
                     if q.id == quiz_id:
                         quizzes[i] = edited
                         break
-                # Update history for next edit
                 history = [q.to_dict() for q in quizzes]
                 fixed_count += 1
             except Exception:
