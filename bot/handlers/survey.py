@@ -1072,8 +1072,7 @@ async def handle_improvement(message: Message, state: FSMContext):
     await state.update_data(quizzes=[q.to_dict() for q in quizzes])
     await state.set_state(SurveyCreation.reviewing)
 
-    # Delete "Regenerando..." message, send the updated poll
-    await loading_msg.delete()
+    # Send the updated poll
     await _send_quiz_preview(message.chat.id, edited_quiz, level, message.bot)
 
     # Summary + edit-done buttons
