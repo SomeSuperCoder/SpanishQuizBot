@@ -257,6 +257,70 @@ class AIService:
 
         return _valid(raw_es, default_es), _valid(raw_ru, default_ru)
 
+    async def review_quizzes(
+        self, quizzes: list[Quiz], topic: str, level: str, dialect: str,
+    ) -> list[dict]:
+        """
+        Review all quizzes for technical issues.
+        Returns a list of issues: [{"id": 3, "issue": "...", "fix": {...}}, ...]
+        Empty list = no issues found.
+        """
+        system = (
+            "Eres un revisor experto de quizzes de español para rusohablantes.\n"
+            "Recibes una lista de quizzes y debes encontrar ERRORES TÉCNICOS.\n\n"
+            "ERRORES A DETECTAR:\n"
+            "1. RESPUESTA CORRECTA MAL: el campo 'correct' apunta a la opción equivocada\n"
+            "2. RESPUESTA EN LA PREGUNTA: la respuesta correcta aparece en el texto de la pregunta\n"
+            "3. REPETICIÓN: dos quizzes usan la misma oración/pregunta casi idéntica\n"
+            "4. OPCIONES SIMILARES DOS: dos opciones de respuesta son prácticamente lo mismo\n"
+            "5. OPCIONES SIMILARES TRES+: tres o más opciones son muy parecidas\n"
+            "6. CATEGORÍA MAL: la categoría no corresponde al tipo de pregunta\n"
+            "7. PREGUNTA VACÍA O MAL: la pregunta no tiene sentido o está incompleta\n"
+            "8. OPCIONES INSUFICIENTES: menos de 3 opciones válidas\n"
+            "9. DUPLICADO EXACTO: dos quizzes tienen la misma pregunta\n\n"
+            "NO DETECTES (eso es gusto del usuario):\n"
+            "- Estilo o tono de la pregunta\n"
+            "- Si el tema es interesante o no\n"
+            "- Si el nivel de dificultad es adecuado\n\n"
+            "REGLAS DE RESPUESTA:\n"
+            "- Responde SOLO con JSON válido, sin texto adicional\n"
+            "- Si NO hay errores: {\"issues\":[]}\n"
+            "- Si HAY errores: {\"issues\":[{\"id\":3,\"issue\":\"...\",\"fix\":{\"question\":\"...\",\"options\":[...],\"correct\":0}}]}\n"
+            "- 'id' = el id del quiz con problema\n"
+            "- 'issue' = descripción breve del problema\n"
+            "- 'fix' = la versión corregida del quiz completo (question, options, correct, category)\n"
+            "- Si un quiz tiene múltiples problemas, incluye UN solo fix que los resuelva todos\n"
+            "- NO corrijas el id ni la categoría del quiz, solo question, options y correct"
+        )
+
+        quizzes_data = [q.to_dict() for q in quizzes]
+        user = (
+            f"Tema: {topic} | Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Quizzes a revisar:\n{json.dumps(quizzes_data, ensure_ascii=False, indent=2)}"
+        )
+
+        raw = await self._call_api_with_retry(system, user)
+
+        # Parse JSON
+        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
+        try:
+            data = json.loads(cleaned)
+            return data.get("issues", [])
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            pass
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+                return data.get("issues", [])
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                pass
+
+        # If we can't parse the review, return empty (no issues) — don't block publishing
+        logger.warning("AI review returned unparseable response, skipping review")
+        return []
+
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> Quiz:

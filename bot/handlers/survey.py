@@ -175,6 +175,16 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     total_ru = sum(counts_ru.values())
     level = data["level"]
     dialect = data["dialect"]
+    total = total_es + total_ru
+
+    # ── Stage 1: Initial generation ─────────────────────────
+    try:
+        await callback_query.message.edit_text(
+            f"🔄 Generando quizzes: creación inicial...\n"
+            f"📊 {total_es} español + {total_ru} ruso"
+        )
+    except Exception:
+        pass  # message might already be deleted
 
     try:
         quizzes = await ai.generate_quizzes(
@@ -196,6 +206,57 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         await state.clear()
         return
 
+    # ── Stage 2: AI self-review ─────────────────────────────
+    try:
+        await callback_query.message.edit_text(
+            f"🔄 Generando quizzes: revisión...\n"
+            f"📊 {total} quizzes — verificando calidad"
+        )
+    except Exception:
+        pass
+
+    try:
+        issues = await ai.review_quizzes(quizzes, topic, level, dialect)
+    except Exception:
+        logger.exception("AI review failed")
+        issues = []
+
+    # ── Stage 3: Fix issues ─────────────────────────────────
+    fixed_count = 0
+    if issues:
+        try:
+            await callback_query.message.edit_text(
+                f"🔄 Generando quizzes: corrección...\n"
+                f"🔧 {len(issues)} problema(s) encontrado(s)"
+            )
+        except Exception:
+            pass
+
+        history = [q.to_dict() for q in quizzes]
+        for issue in issues:
+            quiz_id = issue.get("id")
+            fix_desc = issue.get("issue", "problema detectado")
+            fix_data = issue.get("fix")
+
+            if not quiz_id or not fix_data:
+                continue
+
+            # Build a feedback string that describes the fix
+            feedback = f"Corregir: {fix_desc}. Usar esta versión: {json.dumps(fix_data, ensure_ascii=False)}"
+
+            try:
+                edited = await ai.edit_quiz(topic, history, quiz_id, feedback)
+                # Replace in list
+                for i, q in enumerate(quizzes):
+                    if q.id == quiz_id:
+                        quizzes[i] = edited
+                        break
+                # Update history for next edit
+                history = [q.to_dict() for q in quizzes]
+                fixed_count += 1
+            except Exception:
+                logger.exception("Failed to fix quiz %d", quiz_id)
+
     # Serialize quizzes for FSM storage
     quizzes_data = [q.to_dict() for q in quizzes]
     await state.update_data(quizzes=quizzes_data)
@@ -208,9 +269,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
 
     # Summary + action buttons
     summary = _build_summary(quizzes, level)
+    review_note = f"\n✅ Auto-revisión: {fixed_count} corrección(es)" if fixed_count else ""
     await callback_query.message.answer(
         f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
-        f"{summary}\n\n¿Qué quieres hacer?",
+        f"{summary}{review_note}\n\n¿Qué quieres hacer?",
         reply_markup=get_review_keyboard(),
     )
 
