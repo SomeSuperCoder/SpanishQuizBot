@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
     get_start_keyboard,
-    get_quantity_keyboard,
+    get_counter_keyboard,
     get_level_keyboard,
     get_dialect_keyboard,
     get_review_keyboard,
@@ -22,6 +22,8 @@ from bot.services.ai_service import AIService, AIServiceError, Quiz
 router = Router()
 ai = AIService()
 logger = logging.getLogger(__name__)
+
+COUNTER_MAX = 3
 
 
 # ── helpers ─────────────────────────────────────────────────
@@ -52,6 +54,26 @@ def _build_summary(quizzes: list[Quiz], level: str) -> str:
     return "\n".join(lines)
 
 
+def _get_counter_text(data: dict) -> str:
+    """Build the counter display text."""
+    n_es = data.get("count_espanol", 0)
+    n_ru = data.get("count_ruso", 0)
+    topic = data.get("topic", "")
+    return (
+        f"📊 Tema: *{topic}*\n\n"
+        f"¿Cuántas encuestas quieres crear?\n"
+        f"Usa las flechas para ajustar:"
+    )
+
+
+def _build_counters(data: dict) -> dict[str, tuple[str, int]]:
+    """Build counter dict from FSM data."""
+    return {
+        "espanol": ("Cuestion en español", data.get("count_espanol", 0)),
+        "ruso": ("Cuestion en ruso", data.get("count_ruso", 0)),
+    }
+
+
 # ── /start & create ─────────────────────────────────────────
 
 
@@ -67,36 +89,70 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     await callback_query.answer()
 
 
-# ── topic → quantity ────────────────────────────────────────
+# ── topic → counter ─────────────────────────────────────────
 
 
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic → ask how many quizzes."""
+    """Receive topic → show counter UI."""
     topic = message.text.strip()
-    await state.update_data(topic=topic)
-    await state.set_state(SurveyCreation.waiting_quantity)
+    await state.update_data(topic=topic, count_espanol=0, count_ruso=0)
+    await state.set_state(SurveyCreation.waiting_counter)
 
     await message.answer(
-        f"📊 Tema: *{topic}*\n\n¿Cuántas encuestas quieres crear?",
-        reply_markup=get_quantity_keyboard(),
+        _get_counter_text(await state.get_data()),
+        reply_markup=get_counter_keyboard(_build_counters(await state.get_data())),
         parse_mode="Markdown",
     )
 
 
-# ── quantity → level ────────────────────────────────────────
+# ── counter: increment / decrement / confirm ────────────────
 
 
-@router.callback_query(SurveyCreation.waiting_quantity, F.data.startswith("quantity:"))
-async def handle_quantity(callback_query: CallbackQuery, state: FSMContext):
-    """User chose quantity → ask for level."""
-    count = int(callback_query.data.split(":")[1])
-    await state.update_data(count=count)
-    await state.set_state(SurveyCreation.waiting_level)
+@router.callback_query(SurveyCreation.waiting_counter, F.data.startswith("counter:"))
+async def handle_counter(callback_query: CallbackQuery, state: FSMContext):
+    """Handle counter button press."""
+    parts = callback_query.data.split(":")
+    action = parts[2]  # "+", "-", "show", or "ok" (handled by separate handler)
+    key = parts[1]     # "espanol" or "ruso"
+
+    if action == "ok":
+        return  # handled by handle_counter_confirm
+
+    data = await state.get_data()
+    current = data.get(f"count_{key}", 0)
+
+    if action == "+":
+        current = min(current + 1, COUNTER_MAX)
+    elif action == "-":
+        current = max(current - 1, 0)
+
+    await state.update_data(**{f"count_{key}": current})
+    data = await state.get_data()
 
     await callback_query.message.edit_text(
-        f"📊 Tema: *{callback_query.message.text.split(chr(10))[0].replace('📊 Tema: ', '').replace('*', '')}*\n"
-        f"📝 Cantidad: *{count}*\n\n"
+        _get_counter_text(data),
+        reply_markup=get_counter_keyboard(_build_counters(data)),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.waiting_counter, F.data == "counter:ok")
+async def handle_counter_confirm(callback_query: CallbackQuery, state: FSMContext):
+    """User confirmed counter → ask for level."""
+    data = await state.get_data()
+    n_es = data.get("count_espanol", 0)
+    n_ru = data.get("count_ruso", 0)
+
+    if n_es + n_ru < 1:
+        await callback_query.answer("⚠️ Necesitas al menos 1 quiz", show_alert=True)
+        return
+
+    await state.set_state(SurveyCreation.waiting_level)
+    await callback_query.message.edit_text(
+        f"📊 Tema: *{data['topic']}*\n"
+        f"📝 Quizzes: *{n_es}* en español, *{n_ru}* en ruso\n\n"
         "¿Qué nivel?",
         reply_markup=get_level_keyboard(),
         parse_mode="Markdown",
@@ -116,7 +172,7 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
 
     await callback_query.message.edit_text(
         f"📊 Tema: *{callback_query.message.text.split(chr(10))[0].replace('📊 Tema: ', '').replace('*', '')}*\n"
-        f"📝 Cantidad: *{callback_query.message.text.split(chr(10))[1].replace('📝 Cantidad: ', '').replace('*', '')}*\n"
+        f"📝 Quizzes: *{callback_query.message.text.split(chr(10))[1].replace('📝 Quizzes: ', '').replace('*', '')}*\n"
         f"📚 Nivel: *{level}*\n\n"
         "¿Qué dialecto?",
         reply_markup=get_dialect_keyboard(),
@@ -130,22 +186,23 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
 
 @router.callback_query(SurveyCreation.waiting_dialect, F.data.startswith("dialect:"))
 async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
-    """User chose dialect → generate N quizzes with AI."""
+    """User chose dialect → generate quizzes with AI."""
     dialect = callback_query.data.split(":")[1]
     data = await state.get_data()
     topic = data["topic"]
-    count = data["count"]
+    count_es = data["count_espanol"]
+    count_ru = data["count_ruso"]
     level = data["level"]
 
     await state.update_data(dialect=dialect)
     await state.set_state(SurveyCreation.generating)
     await callback_query.message.edit_text(
-        f"🔄 Generando {count} quizzes nivel {level} ({dialect}) con IA..."
+        f"🔄 Generando {count_es} quizzes en español y {count_ru} en ruso..."
     )
     await callback_query.answer()
 
     try:
-        quizzes = await ai.generate_quizzes(topic, count, level, dialect)
+        quizzes = await ai.generate_quizzes(topic, count_es, count_ru, level, dialect)
     except AIServiceError as e:
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",

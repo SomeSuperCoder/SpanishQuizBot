@@ -1,20 +1,60 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
+# ── reusable counter component ──────────────────────────────
+
+
+def get_counter_keyboard(
+    counters: dict[str, tuple[str, int]],
+    min_total: int = 1,
+    max_value: int = 3,
+    confirm_callback: str = "counter:ok",
+) -> InlineKeyboardMarkup:
+    """
+    Reusable counter keyboard.
+
+    counters = {
+        "key": ("Label shown to user", current_value),
+        ...
+    }
+    min_total: minimum combined value across all counters to enable confirm
+    max_value: maximum value per counter (inclusive)
+    """
+    rows = []
+    for key, (label, value) in counters.items():
+        rows.append([
+            InlineKeyboardButton(
+                text="◀️",
+                callback_data=f"counter:{key}:-",
+            ),
+            InlineKeyboardButton(
+                text=f"{label} — {value}",
+                callback_data=f"counter:{key}:show",
+            ),
+            InlineKeyboardButton(
+                text="▶️",
+                callback_data=f"counter:{key}:+",
+            ),
+        ])
+
+    total = sum(v for _, v in counters.values())
+    if total >= min_total:
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Listo",
+                callback_data=confirm_callback,
+            )
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ── bot keyboards ───────────────────────────────────────────
+
+
 def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Crear encuesta", callback_data="create_survey")]
-    ])
-
-
-def get_quantity_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="2", callback_data="quantity:2"),
-            InlineKeyboardButton(text="3", callback_data="quantity:3"),
-            InlineKeyboardButton(text="4", callback_data="quantity:4"),
-            InlineKeyboardButton(text="5", callback_data="quantity:5"),
-        ]
     ])
 
 

@@ -26,7 +26,6 @@ class Quiz:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Quiz":
-        # AI returns "correct", internal uses "correct_index"
         correct = data.get("correct", data.get("correct_index", 0))
         return cls(
             id=int(data.get("id", 0)),
@@ -53,41 +52,49 @@ class AIService:
 
     # ── public ──────────────────────────────────────────────
 
-    async def generate_quizzes(self, topic: str, count: int, level: str, dialect: str) -> list[Quiz]:
-        """Generate N quizzes from a topic. Difficulty increases from 1 to N."""
-        system = self._system_prompt_generate(count, level, dialect)
-        user = f"Crea {count} quizzes sobre: {topic}"
+    async def generate_quizzes(
+        self, topic: str, count_espanol: int, count_ruso: int, level: str, dialect: str
+    ) -> list[Quiz]:
+        """Generate quizzes. Returns unified list with sequential ids."""
+        system = self._system_prompt_generate(count_espanol, count_ruso, level, dialect)
+        user = f"Crea {count_espanol} quizzes en español y {count_ruso} quizzes en ruso sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
-        quizzes = self._try_parse_quiz_array(raw)
+        result = self._try_parse_structured_response(raw)
 
-        if quizzes is None:
+        if result is None:
             logger.warning("AI returned unparseable response, requesting reformat")
             fix_prompt = (
                 "Tu respuesta anterior no era JSON válido. "
                 "Aquí está tu respuesta:\n\n"
                 f"{raw}\n\n"
-                "Por favor, reformátala como un ARRAY JSON exactamente así, "
-                "sin texto adicional, sin markdown, sin ```:\n"
-                '[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0},'
-                '{"id":2,"question":"...","options":["A","B","C","D"],"correct":1}]'
+                "Por favor, reformátala EXACTAMENTE así, sin texto adicional, sin markdown, sin ```:\n"
+                '{"espanol":[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}],'
+                '"ruso":[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}]}'
             )
-            raw2 = await self._call_api_with_retry(self._system_prompt_generate(count, level, dialect), fix_prompt)
-            quizzes = self._try_parse_quiz_array(raw2)
+            raw2 = await self._call_api_with_retry(system, fix_prompt)
+            result = self._try_parse_structured_response(raw2)
 
-            if quizzes is None:
+            if result is None:
                 raise AIServiceError(
                     "La IA no pudo generar quizzes con formato válido. Intenta de nuevo.",
                     category="PARSE_ERROR",
                     status_code=502,
                 )
 
-        # Ensure correct count and sequential ids
-        quizzes = quizzes[:count]
-        for i, q in enumerate(quizzes):
+        espanol_quizzes = result.get("espanol", [])
+        ruso_quizzes = result.get("ruso", [])
+
+        # Enforce counts
+        espanol_quizzes = espanol_quizzes[:count_espanol]
+        ruso_quizzes = ruso_quizzes[:count_ruso]
+
+        # Assign sequential ids
+        all_quizzes = espanol_quizzes + ruso_quizzes
+        for i, q in enumerate(all_quizzes):
             q.id = i + 1
 
-        return quizzes
+        return all_quizzes
 
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
@@ -124,29 +131,37 @@ class AIService:
 
     # ── JSON parsing ────────────────────────────────────────
 
-    def _try_parse_quiz_array(self, text: str) -> Optional[list[Quiz]]:
-        """Try to parse AI response into a list of Quizzes."""
+    def _try_parse_structured_response(self, text: str) -> Optional[dict]:
+        """Parse {espanol: [...], ruso: [...]} response."""
         cleaned = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`")
 
-        # Direct parse
         try:
             data = json.loads(cleaned)
-            if isinstance(data, list):
-                return [Quiz.from_dict(item) for item in data]
+            if isinstance(data, dict) and ("espanol" in data or "ruso" in data):
+                return self._parse_structured_dict(data)
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             pass
 
-        # Extract JSON array from surrounding text
-        match = re.search(r"\[.*\]", text, re.DOTALL)
+        match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group())
-                if isinstance(data, list):
-                    return [Quiz.from_dict(item) for item in data]
+                if isinstance(data, dict) and ("espanol" in data or "ruso" in data):
+                    return self._parse_structured_dict(data)
             except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                 pass
 
         return None
+
+    def _parse_structured_dict(self, data: dict) -> dict:
+        result = {}
+        for key in ("espanol", "ruso"):
+            items = data.get(key, [])
+            if isinstance(items, list):
+                result[key] = [Quiz.from_dict(item) for item in items if isinstance(item, dict)]
+            else:
+                result[key] = []
+        return result
 
     def _try_parse_single_quiz(self, text: str) -> Optional[Quiz]:
         """Try to parse AI response into a single Quiz."""
@@ -226,30 +241,36 @@ class AIService:
 
     # ── prompts ─────────────────────────────────────────────
 
-    def _system_prompt_generate(self, count: int, level: str, dialect: str) -> str:
+    def _system_prompt_generate(
+        self, count_espanol: int, count_ruso: int, level: str, dialect: str
+    ) -> str:
+        total = count_espanol + count_ruso
         return (
-            "Eres un experto en crear quizzes de español para estudiantes.\n\n"
-            f"Debes generar EXACTAMENTE {count} quizzes de opción múltiple para nivel {level}.\n\n"
-            f"DIALECTO: {dialect}\n"
-            "Usa las particularidades de gramática y vocabulario de este dialecto "
-            "(conjugaciones, expresiones, uso de ustedes/vosotros, etc.) "
-            "PERO el quiz debe centrarse en el TEMA, no en el dialecto. "
-            "El dialecto es un suplemento, no el tema de la pregunta.\n\n"
+            "Eres un experto en crear quizzes de español para estudiantes rusohablantes.\n\n"
+            f"Debes generar EXACTAMENTE {total} quizzes:\n"
+            f"  - {count_espanol} quizzes con la pregunta en ESPAÑOL\n"
+            f"  - {count_ruso} quizzes con la pregunta en RUSO\n\n"
+            f"Nivel: {level}\n"
+            f"Dialecto: {dialect}\n\n"
             "REGLAS:\n"
-            "- Responde SOLO con un array JSON válido, sin texto adicional\n"
-            f"- El array debe tener exactamente {count} objetos\n"
-            "- Cada objeto tiene esta forma:\n"
+            "- Responde SOLO con un JSON válido, sin texto adicional\n"
+            "- El JSON tiene esta forma exacta:\n"
+            '  {"espanol":[...],"ruso":[...]}\n'
+            "- Cada quiz dentro de los arrays tiene esta forma:\n"
             '  {"id":1,"question":"...","options":["A","B","C","D"],"correct":0}\n'
-            "- 'id' = número secuencial empezando en 1\n"
-            "- 'question' = la pregunta clara y concisa, SIN prefijo de nivel\n"
+            "- 'id' = número secuencial empezando en 1 DENTRO de cada array\n"
+            "- 'question' = la pregunta clara y concisa\n"
             "- 'options' = entre 3 y 4 opciones de respuesta\n"
             "- 'correct' = índice (0-based) de la respuesta correcta\n"
-            "- Todo en español\n"
+            "- Las preguntas en español deben ser 100% en español\n"
+            "- Las preguntas en ruso deben ser 100% en ruso\n"
+            "- Las opciones de respuesta pueden estar en el idioma que corresponda\n"
             f"- Las preguntas deben ser apropiadas para nivel {level}\n"
-            "- Las opciones incorrectas deben ser creíbles (errores comunes)\n"
-            "- DIFICULTAD CRECIENTE: el quiz 1 debe ser el más fácil, "
-            f"el quiz {count} debe ser el más difícil\n"
-            "- Varía los tipos de pregunta (completar, seleccionar, conjugación, etc.)"
+            f"- Dialecto {dialect}: usa sus particularidades de gramática y vocabulario, "
+            "PERO el quiz se centra en el TEMA, no en el dialecto\n"
+            "- DIFICULTAD CRECIENTE dentro de cada idioma\n"
+            "- Varía los tipos de pregunta (completar, seleccionar, conjugación, etc.)\n"
+            f"- DEBES generar exactamente {count_espanol} en español y {count_ruso} en ruso"
         )
 
     def _system_prompt_edit(self) -> str:
@@ -262,9 +283,10 @@ class AIService:
             '  {"id":1,"question":"...","options":["A","B","C","D"],"correct":0}\n'
             "- 'id' = el mismo id del quiz que estás editando\n"
             "- SOLO devuelve el quiz editado, NO los demás\n"
+            "- Mantén el idioma del quiz (español o ruso)\n"
             "- Mantén la coherencia con los otros quizzes del historial\n"
             "- Aplica el feedback del usuario\n"
-            "- Todo en español"
+            "- Todo en el idioma original del quiz"
         )
 
     def _edit_user_prompt(
