@@ -6,7 +6,8 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.methods.send_rich_message_draft import SendRichMessageDraft
-from aiogram.types import InputRichMessage, InputRichBlockThinking
+from aiogram.methods.send_rich_message import SendRichMessage
+from aiogram.types import InputRichMessage, InputRichBlockThinking, InputRichBlockParagraph
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
 from bot.keyboards.inline import (
@@ -180,15 +181,27 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     total = total_es + total_ru
     chat_id = callback_query.message.chat.id
 
-    async def _update_thinking(stage: int, text: str) -> None:
-        """Send a thinking draft to show the current stage with progress."""
-        progress = "⬛" * stage + "⬜" * (3 - stage)
+    async def _update_thinking(text: str) -> None:
+        """Send a thinking draft to show the current stage."""
         try:
             await callback_query.bot(SendRichMessageDraft(
                 chat_id=chat_id,
-                draft_id=stage,
+                draft_id=1,
                 rich_message=InputRichMessage(
-                    blocks=[InputRichBlockThinking(text=f"{progress}\n{text}")]
+                    blocks=[InputRichBlockThinking(text=text)]
+                ),
+            ))
+        except Exception:
+            pass  # private chat only; fail silently
+
+    async def _dismiss_thinking() -> None:
+        """Dismiss the thinking draft by replacing it with a final message."""
+        try:
+            await callback_query.bot(SendRichMessage(
+                chat_id=chat_id,
+                draft_id=1,
+                rich_message=InputRichMessage(
+                    blocks=[InputRichBlockParagraph(text="✅ Quizzes listos")]
                 ),
             ))
         except Exception:
@@ -197,7 +210,6 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 1: Initial generation ─────────────────────────
     await callback_query.answer()
     await _update_thinking(
-        1,
         f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso...",
     )
 
@@ -222,7 +234,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         return
 
     # ── Stage 2: AI self-review ─────────────────────────────
-    await _update_thinking(2, f"🔍 Revisión — verificando {total} quizzes")
+    await _update_thinking(f"🔍 Revisión — verificando {total} quizzes")
 
     try:
         issues = await ai.review_quizzes(quizzes, topic, level, dialect)
@@ -233,7 +245,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     # ── Stage 3: Fix issues ─────────────────────────────────
     fixed_count = 0
     if issues:
-        await _update_thinking(3, f"🔧 Corrección — {len(issues)} problema(s) detectado(s)")
+        await _update_thinking(f"🔧 Corrección — {len(issues)} problema(s) detectado(s)")
 
         history = [q.to_dict() for q in quizzes]
         for issue in issues:
@@ -262,7 +274,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     await state.update_data(quizzes=quizzes_data)
     await state.set_state(SurveyCreation.reviewing)
 
-    # Delete the original button message (thinking draft auto-expires)
+    # Dismiss the thinking draft
+    await _dismiss_thinking()
+
+    # Delete the original button message
     try:
         await callback_query.message.delete()
     except Exception:
