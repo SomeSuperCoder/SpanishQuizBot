@@ -142,3 +142,15 @@ def get_cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Cancelar", callback_data="survey_cancel")]
     ])
+
+
+def get_post_accumulation_keyboard(post_count: int) -> InlineKeyboardMarkup:
+    """Keyboard shown after forwarding a post — add more or generate."""
+    singular = post_count == 1
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Agregar otro post", callback_data="post_add_more")],
+        [InlineKeyboardButton(
+            text=f"🚀 Generar desde {'este' if singular else 'estos'}",
+            callback_data="post_generate",
+        )],
+    ])

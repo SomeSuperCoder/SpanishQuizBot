@@ -26,6 +26,7 @@ from bot.keyboards.inline import (
     get_edit_selector_keyboard,
     get_edit_done_keyboard,
     get_cancel_keyboard,
+    get_post_accumulation_keyboard,
 )
 from bot.states.survey import SurveyCreation
 from bot.services.ai_service import AIService, AIServiceError, Quiz, AutoDetected
@@ -396,7 +397,7 @@ async def handle_topic_manual(message: Message, state: FSMContext):
 
 @router.message(SurveyCreation.waiting_topic_forward)
 async def handle_topic_forward(message: Message, state: FSMContext):
-    """Receive forwarded message → extract everything via AI → show counters."""
+    """Receive forwarded message → extract topic → show accumulation keyboard."""
     if message.forward_origin is None:
         await message.answer(
             "⚠️ Necesito un mensaje reenviado.\n"
@@ -412,27 +413,73 @@ async def handle_topic_forward(message: Message, state: FSMContext):
         )
         return
 
-    await _show_thinking(message.bot, message.chat.id, 2, _EMOJI_ANALYZE, "🔍",
-        " Analizando mensaje reenviado...")
+    # Accumulate posts in state
+    data = await state.get_data()
+    forwarded_posts: list[str] = data.get("forwarded_posts", [])
+    forwarded_posts.append(text.strip())
+    await state.update_data(forwarded_posts=forwarded_posts)
+
+    post_count = len(forwarded_posts)
+    preview = text.strip()[:100] + ("..." if len(text.strip()) > 100 else "")
+
+    await message.answer(
+        f"✅ Post #{post_count} guardado:\n\n"
+        f"_{preview}_\n\n"
+        f"📚 {post_count} post{'s' if post_count > 1 else ''} acumulado{'s' if post_count > 1 else ''}",
+        reply_markup=get_post_accumulation_keyboard(post_count),
+        parse_mode="Markdown",
+    )
+    await state.set_state(SurveyCreation.waiting_more_posts)
+
+
+@router.callback_query(SurveyCreation.waiting_more_posts, F.data == "post_add_more")
+async def handle_add_more_posts(callback_query: CallbackQuery, state: FSMContext):
+    """User wants to add another post — go back to waiting for forwarded message."""
+    await state.set_state(SurveyCreation.waiting_topic_forward)
+    await callback_query.message.edit_text(
+        "🔄 Reenvía otro post de un canal de español.\n"
+        "Cuando tengas todos los posts, elige \"Generar\"."
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.waiting_more_posts, F.data == "post_generate")
+async def handle_generate_from_posts(callback_query: CallbackQuery, state: FSMContext):
+    """User chose to generate — extract topic from accumulated posts and proceed."""
+    data = await state.get_data()
+    forwarded_posts: list[str] = data.get("forwarded_posts", [])
+    post_count = len(forwarded_posts)
+
+    # Combine all posts for AI analysis
+    combined_text = "\n\n---\n\n".join(forwarded_posts)
+
+    await callback_query.answer()
+    await _show_thinking(callback_query.bot, callback_query.message.chat.id, 2, _EMOJI_ANALYZE, "🔍",
+        f" Analizando {post_count} post{'s' if post_count > 1 else ''}...")
+
     try:
-        detected = await ai.determine_topic(text)
+        detected = await ai.determine_topic(combined_text, is_multi_post=(post_count > 1))
     except Exception:
-        logger.exception("Failed to determine topic from forwarded message")
-        await _dismiss_thinking(message.bot, message.chat.id, 2)
-        await message.answer(
-            "❌ No pude determinar el tema. Intenta escribirlo manualmente."
+        logger.exception("Failed to determine topic from forwarded posts")
+        await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 2)
+        await callback_query.message.edit_text(
+            "❌ No pude determinar el tema. Intenta escribirlo manualmente.",
+            reply_markup=get_start_keyboard(),
         )
+        await state.clear()
         return
 
     if detected.topic == "NO_TOPIC":
-        await _dismiss_thinking(message.bot, message.chat.id, 2)
-        await message.answer(
-            "⚠️ No encontré material de español en ese mensaje.\n"
-            "Reenvía otro mensaje o escribe el tema manualmente."
+        await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 2)
+        await callback_query.message.edit_text(
+            "⚠️ No encontré material de español en los posts enviados.\n"
+            "Reenvía otros posts o escribe el tema manualmente.",
+            reply_markup=get_start_keyboard(),
         )
+        await state.clear()
         return
 
-    await _dismiss_thinking(message.bot, message.chat.id, 2)
+    await _dismiss_thinking(callback_query.bot, callback_query.message.chat.id, 2)
 
     # Two SEPARATE dicts — never share the same object
     counts_es = {c["key"]: 0 for c in CATEGORIES}
@@ -444,10 +491,12 @@ async def handle_topic_forward(message: Message, state: FSMContext):
     )
     await state.set_state(SurveyCreation.waiting_category_mode)
 
-    await message.answer(
+    post_label = f"{post_count} posts" if post_count > 1 else "1 post"
+    await callback_query.message.edit_text(
         f"📊 *Tema detectado:* {detected.topic}\n"
         f"📚 *Nivel:* {detected.level} 🔍\n"
-        f"🗣️ *Dialecto:* {detected.dialect} 🔍\n\n"
+        f"🗣️ *Dialecto:* {detected.dialect} 🔍\n"
+        f"📄 *Posts analizados:* {post_label}\n\n"
         f"¿Cómo quieres elegir las cantidades de quizzes?",
         reply_markup=get_category_mode_keyboard(),
         parse_mode="Markdown",

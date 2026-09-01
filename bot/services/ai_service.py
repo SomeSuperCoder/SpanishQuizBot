@@ -65,18 +65,20 @@ class AIService:
 
     async def generate_quizzes(
         self, topic: str, count_es: dict[str, int], count_ru: dict[str, int],
-        level: str, dialect: str, examples: list[str] | None = None
+        level: str, dialect: str, examples: list[str] | None = None,
+        forwarded_posts: list[str] | None = None,
     ) -> list[Quiz]:
         """
         Generate quizzes with per-category counts.
         count_es = {"fill_blank": 2, "meaning": 1, "synonyms": 0, "slang": 1}
         count_ru = {"fill_blank": 1, "meaning": 2, "synonyms": 1, "slang": 0}
         examples = optional list of example sentences from the original post
+        forwarded_posts = optional list of forwarded post texts (for multi-post workflow)
         """
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
 
-        system = self._system_prompt_generate(count_es, count_ru, level, dialect, examples)
+        system = self._system_prompt_generate(count_es, count_ru, level, dialect, examples, forwarded_posts)
         user = f"Crea quizzes sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
@@ -116,8 +118,16 @@ class AIService:
 
         return all_quizzes
 
-    async def determine_topic(self, text: str) -> AutoDetected:
-        """Extract topic, examples, level, and dialect from a forwarded message."""
+    async def determine_topic(self, text: str, is_multi_post: bool = False) -> AutoDetected:
+        """Extract topic, examples, level, and dialect from a forwarded message or multiple posts."""
+        multi_post_context = ""
+        if is_multi_post:
+            multi_post_context = (
+                "\n\nCONTEXTO IMPORTANTE: Estos posts son parte de un quiz SEMANAL.\n"
+                "El usuario reenvió múltiples posts de canales de español para crear un quiz.\n"
+                "Determina un tema que unifique TODOS los posts.\n"
+            )
+
         system = (
             "Eres un experto en enseñanza de español para rusohablantes.\n"
             "Recibes el texto de un mensaje reenviado de un canal de español.\n"
@@ -138,6 +148,7 @@ class AIService:
             "  - 'Argentino' (si usa vocabulario/gramática de Argentina)\n"
             "- Si el texto no contiene material de español:\n"
             '  {"topic":"NO_TOPIC","examples":[],"level":"A1","dialect":"Castellano"}'
+            f"{multi_post_context}"
         )
         raw = await self._call_api_with_retry(system, text)
 
@@ -471,7 +482,8 @@ class AIService:
 
     def _system_prompt_generate(
         self, count_es: dict[str, int], count_ru: dict[str, int], level: str,
-        dialect: str, examples: list[str] | None = None
+        dialect: str, examples: list[str] | None = None,
+        forwarded_posts: list[str] | None = None,
     ) -> str:
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
@@ -487,6 +499,7 @@ class AIService:
         es_list = _cat_list(count_es, "español")
         ru_list = _cat_list(count_ru, "ruso")
 
+        # Build examples section (always present as baseline)
         examples_section = ""
         if examples:
             examples_text = "\n".join(f"  - {e}" for e in examples)
@@ -494,9 +507,29 @@ class AIService:
                 f"\nORACIONES DEL POST ORIGINAL — ESTA ES LA BASE PRINCIPAL:\n"
                 f"{examples_text}\n\n"
                 f"REGLA CRÍTICA: El 60% de los quizzes DEBE venir de estas oraciones.\n"
-                f"Estas oraciones son elmaterial original del estudiante.\n"
+                f"Estas oraciones son el material original del estudiante.\n"
                 f"Modifícalas, extrae vocabulario, crea vacíos, pregunta sobre su significado.\n"
                 f"El 40% restante pueden ser preguntas nuevas que complementen el tema.\n"
+            )
+
+        # Build multi-post ADDITIONAL context (added on top of baseline when 2+ posts)
+        multi_post_addition = ""
+        if forwarded_posts and len(forwarded_posts) > 1:
+            posts_text = "\n\n---\n\n".join(forwarded_posts)
+            multi_post_addition = (
+                f"\n\n{'='*60}\n"
+                f"QUIZ SEMANAL BASADO EN MÚLTIPLES POSTS\n"
+                f"{'='*60}\n\n"
+                f"El usuario reenvió {len(forwarded_posts)} posts de canales de español.\n"
+                f"Este quiz es parte de una actividad SEMANAL de aprendizaje.\n\n"
+                f"POSTS ORIGINALES:\n{posts_text}\n\n"
+                f"INSTRUCCIONES PARA QUIZ SEMANAL:\n"
+                f"- Crea quizzes que cubran el TEMA GENERAL que unifica todos los posts\n"
+                f"- Distribuye los quizzes entre los diferentes aspectos de los posts\n"
+                f"- Mantén coherencia temática entre todos los quizzes\n"
+                f"- El 60% de los quizzes DEBE venir de las oraciones de ESTOS posts\n"
+                f"- El 40% restante pueden ser preguntas complementarias sobre el tema\n"
+                f"- El quiz semanal integra múltiples fuentes para cobertura temática completa\n"
             )
 
         return (
@@ -511,7 +544,8 @@ class AIService:
             f"En RUSO ({total_ru}):\n{ru_list}\n\n"
             f"Nivel: {level}\n"
             f"Dialecto: {dialect}\n"
-            f"{examples_section}\n"
+            f"{examples_section}"
+            f"{multi_post_addition}\n"
             "REGLAS:\n"
             "- Responde SOLO con un JSON válido, sin texto adicional\n"
             "- El JSON tiene esta forma exacta:\n"
