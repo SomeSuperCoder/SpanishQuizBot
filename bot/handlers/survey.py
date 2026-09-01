@@ -9,6 +9,7 @@ from bot.database.repository import UserRepository, SurveyRepository, BotConfigR
 from bot.keyboards.inline import (
     get_start_keyboard,
     get_quantity_keyboard,
+    get_level_keyboard,
     get_review_keyboard,
     get_edit_selector_keyboard,
     get_edit_done_keyboard,
@@ -25,11 +26,16 @@ logger = logging.getLogger(__name__)
 # ── helpers ─────────────────────────────────────────────────
 
 
-async def _send_quiz_preview(target, quiz: Quiz, bot) -> None:
-    """Send a real Telegram quiz poll (no [n] prefix — that goes in the summary)."""
+def _prefixed_question(quiz: Quiz, level: str) -> str:
+    """Add [level] prefix to quiz question."""
+    return f"[{level}] {quiz.question}"
+
+
+async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
+    """Send a real Telegram quiz poll with [level] prefix."""
     await bot.send_poll(
         chat_id=target,
-        question=quiz.question,
+        question=_prefixed_question(quiz, level),
         options=[{"text": opt} for opt in quiz.options],
         type="quiz",
         correct_option_id=quiz.correct_index,
@@ -37,11 +43,11 @@ async def _send_quiz_preview(target, quiz: Quiz, bot) -> None:
     )
 
 
-def _build_summary(quizzes: list[Quiz]) -> str:
+def _build_summary(quizzes: list[Quiz], level: str) -> str:
     """Build the [n] summary shown in the review message."""
     lines = []
     for q in quizzes:
-        lines.append(f"[{q.id}] {q.question}")
+        lines.append(f"[{q.id}] {_prefixed_question(q, level)}")
     return "\n".join(lines)
 
 
@@ -77,24 +83,46 @@ async def handle_topic(message: Message, state: FSMContext):
     )
 
 
-# ── quantity → generate N quizzes ──────────────────────────
+# ── quantity → level ────────────────────────────────────────
 
 
 @router.callback_query(SurveyCreation.waiting_quantity, F.data.startswith("quantity:"))
 async def handle_quantity(callback_query: CallbackQuery, state: FSMContext):
-    """User chose quantity → generate N quizzes with AI."""
+    """User chose quantity → ask for level."""
     count = int(callback_query.data.split(":")[1])
+    await state.update_data(count=count)
+    await state.set_state(SurveyCreation.waiting_level)
+
+    await callback_query.message.edit_text(
+        f"📊 Tema: *{callback_query.message.text.split(chr(10))[0].replace('📊 Tema: ', '').replace('*', '')}*\n"
+        f"📝 Cantidad: *{count}*\n\n"
+        "¿Qué nivel?",
+        reply_markup=get_level_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+# ── level → generate N quizzes ─────────────────────────────
+
+
+@router.callback_query(SurveyCreation.waiting_level, F.data.startswith("level:"))
+async def handle_level(callback_query: CallbackQuery, state: FSMContext):
+    """User chose level → generate N quizzes with AI."""
+    level = callback_query.data.split(":")[1]
     data = await state.get_data()
     topic = data["topic"]
+    count = data["count"]
 
+    await state.update_data(level=level)
     await state.set_state(SurveyCreation.generating)
     await callback_query.message.edit_text(
-        f"🔄 Generando {count} quizzes con IA..."
+        f"🔄 Generando {count} quizzes nivel {level} con IA..."
     )
     await callback_query.answer()
 
     try:
-        quizzes = await ai.generate_quizzes(topic, count)
+        quizzes = await ai.generate_quizzes(topic, count, level)
     except AIServiceError as e:
         await callback_query.message.edit_text(
             f"❌ {e}\n\nIntenta de nuevo.",
@@ -119,12 +147,12 @@ async def handle_quantity(callback_query: CallbackQuery, state: FSMContext):
     # Send all polls as preview
     await callback_query.message.delete()
     for quiz in quizzes:
-        await _send_quiz_preview(callback_query.message.chat.id, quiz, callback_query.bot)
+        await _send_quiz_preview(callback_query.message.chat.id, quiz, level, callback_query.bot)
 
     # Summary + action buttons
-    summary = _build_summary(quizzes)
+    summary = _build_summary(quizzes, level)
     await callback_query.message.answer(
-        f"👆 {len(quizzes)} quizzes generados (del más fácil al más difícil):\n\n"
+        f"👆 {len(quizzes)} quizzes nivel {level} (del más fácil al más difícil):\n\n"
         f"{summary}\n\n¿Qué quieres hacer?",
         reply_markup=get_review_keyboard(),
     )
@@ -151,6 +179,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
     """Publish all quizzes to the global channel."""
     data = await state.get_data()
     topic = data["topic"]
+    level = data["level"]
     quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
     channel_id = await BotConfigRepository.get_channel_id()
@@ -170,7 +199,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
         for quiz in quizzes:
             await callback_query.bot.send_poll(
                 chat_id=channel_id,
-                question=quiz.question,
+                question=_prefixed_question(quiz, level),
                 options=[{"text": opt} for opt in quiz.options],
                 type="quiz",
                 correct_option_id=quiz.correct_index,
@@ -178,7 +207,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             )
 
         await callback_query.message.edit_text(
-            f"🚀 ¡{len(quizzes)} quizzes publicados!\n\n"
+            f"🚀 ¡{len(quizzes)} quizzes nivel {level} publicados!\n\n"
             f"📍 Canal: {channel_title or channel_id}\n"
             f"📊 Tema: {topic}",
             reply_markup=get_start_keyboard(),
@@ -218,6 +247,7 @@ async def handle_improvement(message: Message, state: FSMContext):
     feedback = message.text.strip()
     data = await state.get_data()
     topic = data["topic"]
+    level = data["level"]
     editing_id = data["editing_id"]
     quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
 
@@ -254,10 +284,10 @@ async def handle_improvement(message: Message, state: FSMContext):
 
     # Delete "Regenerando..." message, send the updated poll
     await loading_msg.delete()
-    await _send_quiz_preview(message.chat.id, edited_quiz, message.bot)
+    await _send_quiz_preview(message.chat.id, edited_quiz, level, message.bot)
 
     # Summary + edit-done buttons
-    summary = _build_summary(quizzes)
+    summary = _build_summary(quizzes, level)
     await message.answer(
         f"👆 Quiz #{editing_id} actualizado.\n\n"
         f"{summary}\n\n¿Qué quieres hacer?",

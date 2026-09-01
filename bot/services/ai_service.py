@@ -53,9 +53,9 @@ class AIService:
 
     # ── public ──────────────────────────────────────────────
 
-    async def generate_quizzes(self, topic: str, count: int) -> list[Quiz]:
+    async def generate_quizzes(self, topic: str, count: int, level: str) -> list[Quiz]:
         """Generate N quizzes from a topic. Difficulty increases from 1 to N."""
-        system = self._system_prompt_generate(count)
+        system = self._system_prompt_generate(count, level)
         user = f"Crea {count} quizzes sobre: {topic}"
 
         raw = await self._call_api_with_retry(system, user)
@@ -72,7 +72,7 @@ class AIService:
                 '[{"id":1,"question":"...","options":["A","B","C","D"],"correct":0},'
                 '{"id":2,"question":"...","options":["A","B","C","D"],"correct":1}]'
             )
-            raw2 = await self._call_api_with_retry(self._system_prompt_generate(count), fix_prompt)
+            raw2 = await self._call_api_with_retry(self._system_prompt_generate(count, level), fix_prompt)
             quizzes = self._try_parse_quiz_array(raw2)
 
             if quizzes is None:
@@ -226,21 +226,21 @@ class AIService:
 
     # ── prompts ─────────────────────────────────────────────
 
-    def _system_prompt_generate(self, count: int) -> str:
+    def _system_prompt_generate(self, count: int, level: str) -> str:
         return (
             "Eres un experto en crear quizzes de español para estudiantes.\n\n"
-            f"Debes generar EXACTAMENTE {count} quizzes de opción múltiple.\n\n"
+            f"Debes generar EXACTAMENTE {count} quizzes de opción múltiple para nivel {level}.\n\n"
             "REGLAS:\n"
             "- Responde SOLO con un array JSON válido, sin texto adicional\n"
             f"- El array debe tener exactamente {count} objetos\n"
             "- Cada objeto tiene esta forma:\n"
             '  {"id":1,"question":"...","options":["A","B","C","D"],"correct":0}\n'
             "- 'id' = número secuencial empezando en 1\n"
-            "- 'question' = la pregunta clara y concisa\n"
+            "- 'question' = la pregunta clara y concisa, SIN prefijo de nivel\n"
             "- 'options' = entre 3 y 4 opciones de respuesta\n"
             "- 'correct' = índice (0-based) de la respuesta correcta\n"
             "- Todo en español\n"
-            "- Las preguntas deben ser educativas y precisas\n"
+            f"- Las preguntas deben ser apropiadas para nivel {level}\n"
             "- Las opciones incorrectas deben ser creíbles (errores comunes)\n"
             "- DIFICULTAD CRECIENTE: el quiz 1 debe ser el más fácil, "
             f"el quiz {count} debe ser el más difícil\n"
