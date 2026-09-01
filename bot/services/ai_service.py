@@ -37,6 +37,15 @@ class Quiz:
         )
 
 
+@dataclass
+class AutoDetected:
+    """Auto-detected settings from a forwarded message."""
+    topic: str
+    examples: list[str]
+    level: str  # A1-C2
+    dialect: str  # Castellano, Mexicano, Argentino
+
+
 class AIServiceError(Exception):
     def __init__(self, message: str, category: str = "EXTERNAL", status_code: int = 500):
         super().__init__(message)
@@ -107,22 +116,28 @@ class AIService:
 
         return all_quizzes
 
-    async def determine_topic(self, text: str) -> tuple[str, list[str]]:
-        """Extract the topic and example sentences from a forwarded message."""
+    async def determine_topic(self, text: str) -> AutoDetected:
+        """Extract topic, examples, level, and dialect from a forwarded message."""
         system = (
             "Eres un experto en enseñanza de español para rusohablantes.\n"
             "Recibes el texto de un mensaje reenviado de un canal de español.\n"
-            "Tu tarea: determinar el TEMA y extraer TODAS las oraciones de ejemplo.\n\n"
+            "Tu tarea: determinar el TEMA, extraer oraciones, nivel CEFR y dialecto.\n\n"
             "REGLAS:\n"
             "- Responde SOLO con JSON válido, sin texto adicional\n"
             "- El JSON tiene esta forma:\n"
-            '  {"topic":"Subjuntivo presente","examples":["Oración 1","Oración 2",...]}\n'
+            '  {"topic":"...","examples":["..."],"level":"B1","dialect":"Castellano"}\n'
             "- 'topic' = tema conciso (2-5 palabras)\n"
             "- 'examples' = TODAS las oraciones/frases del mensaje que contengan español.\n"
             "  Extrae CADA oración completa. No omitas ninguna.\n"
-            "  Si hay 10 oraciones, extrae las 10. Si hay 3, extrae las 3.\n"
             "  Son la BASE para crear los quizzes, necesitamos todas.\n"
-            "- Si el texto no contiene material de español: {\"topic\":\"NO_TOPIC\",\"examples\":[]}"
+            "- 'level' = nivel CEFR aproximado del contenido (A1, A2, B1, B2, C1, C2).\n"
+            "  Analiza la complejidad gramatical y vocabulario para determinarlo.\n"
+            "- 'dialect' = dialecto detectado del contenido:\n"
+            "  - 'Castellano' (por defecto si no se detecta otro)\n"
+            "  - 'Mexicano' (si usa vocabulario/gramática de México)\n"
+            "  - 'Argentino' (si usa vocabulario/gramática de Argentina)\n"
+            "- Si el texto no contiene material de español:\n"
+            '  {"topic":"NO_TOPIC","examples":[],"level":"A1","dialect":"Castellano"}'
         )
         raw = await self._call_api_with_retry(system, text)
 
@@ -130,23 +145,36 @@ class AIService:
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
         try:
             data = json.loads(cleaned)
-            topic = str(data.get("topic", "NO_TOPIC")).strip()
-            examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
-            return topic, examples
+            return self._parse_auto_detected(data)
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            # Try regex fallback
-            match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                    topic = str(data.get("topic", "NO_TOPIC")).strip()
-                    examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
-                    return topic, examples
-                except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-                    pass
-            # Last resort: treat whole response as topic
-            topic = raw.strip().strip('"').strip("'").strip()
-            return (topic if topic else "NO_TOPIC"), []
+            pass
+
+        # Try regex fallback
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+                return self._parse_auto_detected(data)
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                pass
+
+        # Last resort
+        return AutoDetected(topic="NO_TOPIC", examples=[], level="A1", dialect="Castellano")
+
+    def _parse_auto_detected(self, data: dict) -> AutoDetected:
+        topic = str(data.get("topic", "NO_TOPIC")).strip()
+        examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
+        level = str(data.get("level", "A1")).strip().upper()
+        dialect = str(data.get("dialect", "Castellano")).strip().capitalize()
+
+        # Validate level
+        if level not in ("A1", "A2", "B1", "B2", "C1", "C2"):
+            level = "A1"
+        # Validate dialect
+        if dialect not in ("Castellano", "Mexicano", "Argentino"):
+            dialect = "Castellano"
+
+        return AutoDetected(topic=topic, examples=examples, level=level, dialect=dialect)
 
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str

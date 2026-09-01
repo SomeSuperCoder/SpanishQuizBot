@@ -19,7 +19,7 @@ from bot.keyboards.inline import (
     get_cancel_keyboard,
 )
 from bot.states.survey import SurveyCreation
-from bot.services.ai_service import AIService, AIServiceError, Quiz
+from bot.services.ai_service import AIService, AIServiceError, Quiz, AutoDetected
 
 router = Router()
 ai = AIService()
@@ -103,6 +103,57 @@ def _get_total(data: dict, lang: str) -> int:
     return sum(_get_counts(data, lang).values())
 
 
+async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext) -> None:
+    """Shared generation logic — called from dialect handler and auto-detect path."""
+    data = await state.get_data()
+    topic = data["topic"]
+    examples = data.get("examples", [])
+    counts_es = _get_counts(data, "es")
+    counts_ru = _get_counts(data, "ru")
+    total_es = sum(counts_es.values())
+    total_ru = sum(counts_ru.values())
+    level = data["level"]
+    dialect = data["dialect"]
+
+    try:
+        quizzes = await ai.generate_quizzes(
+            topic, counts_es, counts_ru, level, dialect, examples=examples
+        )
+    except AIServiceError as e:
+        await callback_query.message.edit_text(
+            f"❌ {e}\n\nIntenta de nuevo.",
+            reply_markup=get_start_keyboard(),
+        )
+        await state.clear()
+        return
+    except Exception:
+        logger.exception("Unexpected error generating quizzes")
+        await callback_query.message.edit_text(
+            "❌ Error inesperado al generar los quizzes. Intenta de nuevo.",
+            reply_markup=get_start_keyboard(),
+        )
+        await state.clear()
+        return
+
+    # Serialize quizzes for FSM storage
+    quizzes_data = [q.to_dict() for q in quizzes]
+    await state.update_data(quizzes=quizzes_data)
+    await state.set_state(SurveyCreation.reviewing)
+
+    # Send all polls as preview
+    await callback_query.message.delete()
+    for quiz in quizzes:
+        await _send_quiz_preview(callback_query.message.chat.id, quiz, level, callback_query.bot)
+
+    # Summary + action buttons
+    summary = _build_summary(quizzes, level)
+    await callback_query.message.answer(
+        f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
+        f"{summary}\n\n¿Qué quieres hacer?",
+        reply_markup=get_review_keyboard(),
+    )
+
+
 # ── /start & create ─────────────────────────────────────────
 
 
@@ -175,7 +226,7 @@ async def handle_topic_manual(message: Message, state: FSMContext):
 
 @router.message(SurveyCreation.waiting_topic_forward)
 async def handle_topic_forward(message: Message, state: FSMContext):
-    """Receive forwarded message → extract topic via AI → show counters."""
+    """Receive forwarded message → extract everything via AI → show counters."""
     if message.forward_origin is None:
         await message.answer(
             "⚠️ Necesito un mensaje reenviado.\n"
@@ -193,7 +244,7 @@ async def handle_topic_forward(message: Message, state: FSMContext):
 
     loading = await message.answer("🔍 Analizando mensaje reenviado...")
     try:
-        topic, examples = await ai.determine_topic(text)
+        detected = await ai.determine_topic(text)
     except Exception:
         logger.exception("Failed to determine topic from forwarded message")
         await loading.edit_text(
@@ -201,7 +252,7 @@ async def handle_topic_forward(message: Message, state: FSMContext):
         )
         return
 
-    if topic == "NO_TOPIC":
+    if detected.topic == "NO_TOPIC":
         await loading.edit_text(
             "⚠️ No encontré material de español en ese mensaje.\n"
             "Reenvía otro mensaje o escribe el tema manualmente."
@@ -214,8 +265,9 @@ async def handle_topic_forward(message: Message, state: FSMContext):
     counts_es = {c["key"]: 0 for c in CATEGORIES}
     counts_ru = {c["key"]: 0 for c in CATEGORIES}
     await state.update_data(
-        topic=topic, examples=examples,
-        counts_es=counts_es, counts_ru=counts_ru
+        topic=detected.topic, examples=detected.examples,
+        counts_es=counts_es, counts_ru=counts_ru,
+        auto_level=detected.level, auto_dialect=detected.dialect,
     )
     await state.set_state(SurveyCreation.waiting_counter_es)
 
@@ -285,7 +337,7 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
     """Handle Russian category counter press."""
     parts = callback_query.data.split(":")
 
-    # counter:ok — confirm → move to level
+    # counter:ok — confirm → move to level (or skip if auto-detected)
     if len(parts) == 2 and parts[1] == "ok":
         data = await state.get_data()
         total_es = _get_total(data, "es")
@@ -295,6 +347,32 @@ async def handle_counter_ru(callback_query: CallbackQuery, state: FSMContext):
             await callback_query.answer("⚠️ Necesitas al menos 1 quiz en ruso", show_alert=True)
             return
 
+        # Check if level/dialect were auto-detected
+        auto_level = data.get("auto_level")
+        auto_dialect = data.get("auto_dialect")
+
+        if auto_level and auto_dialect:
+            # Skip level/dialect selection — go straight to generating
+            await state.update_data(level=auto_level, dialect=auto_dialect)
+            await state.set_state(SurveyCreation.generating)
+
+            level_label = f"{auto_level} 🔍" if auto_level else auto_level
+            dialect_label = f"{auto_dialect} 🔍" if auto_dialect else auto_dialect
+
+            await callback_query.message.edit_text(
+                f"📊 Tema: *{data['topic']}*\n"
+                f"📝 Total: *{total_es}* español + *{total_ru}* ruso\n"
+                f"📚 Nivel: *{level_label}* (detectado)\n"
+                f"🗣️ Dialecto: *{dialect_label}* (detectado)\n\n"
+                "🔄 Generando quizzes..."
+            )
+            await callback_query.answer()
+
+            # Trigger generation directly
+            await _generate_and_preview(callback_query, state)
+            return
+
+        # Manual mode — ask for level
         await state.set_state(SurveyCreation.waiting_level)
         await callback_query.message.edit_text(
             f"📊 Tema: *{data['topic']}*\n"
@@ -362,59 +440,21 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
 async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     """User chose dialect → generate quizzes with AI."""
     dialect = callback_query.data.split(":")[1]
+    await state.update_data(dialect=dialect)
+
     data = await state.get_data()
-    topic = data["topic"]
-    examples = data.get("examples", [])
     counts_es = _get_counts(data, "es")
     counts_ru = _get_counts(data, "ru")
     total_es = sum(counts_es.values())
     total_ru = sum(counts_ru.values())
-    level = data["level"]
 
-    await state.update_data(dialect=dialect)
     await state.set_state(SurveyCreation.generating)
     await callback_query.message.edit_text(
         f"🔄 Generando {total_es} quizzes en español y {total_ru} en ruso..."
     )
     await callback_query.answer()
 
-    try:
-        quizzes = await ai.generate_quizzes(
-            topic, counts_es, counts_ru, level, dialect, examples=examples
-        )
-    except AIServiceError as e:
-        await callback_query.message.edit_text(
-            f"❌ {e}\n\nIntenta de nuevo.",
-            reply_markup=get_start_keyboard(),
-        )
-        await state.clear()
-        return
-    except Exception:
-        logger.exception("Unexpected error generating quizzes")
-        await callback_query.message.edit_text(
-            "❌ Error inesperado al generar los quizzes. Intenta de nuevo.",
-            reply_markup=get_start_keyboard(),
-        )
-        await state.clear()
-        return
-
-    # Serialize quizzes for FSM storage
-    quizzes_data = [q.to_dict() for q in quizzes]
-    await state.update_data(quizzes=quizzes_data)
-    await state.set_state(SurveyCreation.reviewing)
-
-    # Send all polls as preview
-    await callback_query.message.delete()
-    for quiz in quizzes:
-        await _send_quiz_preview(callback_query.message.chat.id, quiz, level, callback_query.bot)
-
-    # Summary + action buttons
-    summary = _build_summary(quizzes, level)
-    await callback_query.message.answer(
-        f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
-        f"{summary}\n\n¿Qué quieres hacer?",
-        reply_markup=get_review_keyboard(),
-    )
+    await _generate_and_preview(callback_query, state)
 
 
 # ── review: edit or publish ─────────────────────────────────
