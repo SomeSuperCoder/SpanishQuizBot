@@ -107,6 +107,27 @@ class AIService:
 
         return all_quizzes
 
+    async def determine_topic(self, text: str) -> str:
+        """Extract the Spanish-learning topic from a forwarded message."""
+        system = (
+            "Eres un experto en enseñanza de español para rusohablantes.\n"
+            "Recibes el texto de un mensaje reenviado de un canal de español.\n"
+            "Tu tarea: determinar el TEMA sobre el cual se pueden crear quizzes de español.\n\n"
+            "REGLAS:\n"
+            "- Responde SOLO con el tema, sin explicaciones, sin comillas, sin formato\n"
+            "- El tema debe ser conciso (2-5 palabras)\n"
+            "- Ejemplos de temas válidos:\n"
+            "  'Pretérito indefinido'\n"
+            "  'Ser vs Estar'\n"
+            "  'Subjuntivo presente'\n"
+            "  'Vocabulario de comida'\n"
+            "  'Expresiones coloquiales'\n"
+            "- Si el texto no contiene material de español, responde: NO_TOPIC"
+        )
+        raw = await self._call_api_with_retry(system, text)
+        topic = raw.strip().strip('"').strip("'").strip()
+        return topic if topic else "NO_TOPIC"
+
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> Quiz:

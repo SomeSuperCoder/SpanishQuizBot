@@ -112,7 +112,8 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
     await callback_query.message.edit_text(
         "📝 ¡Genial! Vamos a crear quizzes.\n\n"
         "¿Cuál es el tema?\n"
-        "(Ej: Imperfecto de subjuntivo, Ser vs Estar, Pretérito indefinido...)"
+        "(Ej: Imperfecto de subjuntivo, Ser vs Estar, Pretérito indefinido...)\n\n"
+        "💡 También puedes reenviar un mensaje de un canal y yo extraeré el tema."
     )
     await callback_query.answer()
 
@@ -122,8 +123,40 @@ async def handle_create_survey(callback_query: CallbackQuery, state: FSMContext)
 
 @router.message(SurveyCreation.waiting_topic)
 async def handle_topic(message: Message, state: FSMContext):
-    """Receive topic → show Spanish category counters."""
-    topic = message.text.strip()
+    """Receive topic (text or forwarded message) → show Spanish category counters."""
+    # Check if message is forwarded
+    if message.forward_origin is not None:
+        text = message.text or message.caption or ""
+        if not text.strip():
+            await message.answer(
+                "⚠️ El mensaje reenviado no tiene texto.\n"
+                "Reenvía un mensaje que contenga texto sobre español."
+            )
+            return
+
+        loading = await message.answer("🔍 Analizando mensaje reenviado...")
+        try:
+            topic = await ai.determine_topic(text)
+        except Exception:
+            logger.exception("Failed to determine topic from forwarded message")
+            await loading.edit_text(
+                "❌ No pude determinar el tema. Intenta escribirlo manualmente."
+            )
+            return
+
+        if topic == "NO_TOPIC":
+            await loading.edit_text(
+                "⚠️ No encontré material de español en ese mensaje.\n"
+                "Escribe el tema manualmente o reenvía otro mensaje."
+            )
+            return
+
+        await loading.delete()
+    else:
+        topic = (message.text or "").strip()
+        if not topic:
+            return
+
     # Two SEPARATE dicts — never share the same object
     counts_es = {c["key"]: 0 for c in CATEGORIES}
     counts_ru = {c["key"]: 0 for c in CATEGORIES}
