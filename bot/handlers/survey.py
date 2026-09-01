@@ -176,6 +176,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
     level = data["level"]
     dialect = data["dialect"]
     total = total_es + total_ru
+    chat_id = callback_query.message.chat.id
 
     async def _update_thinking(text: str) -> None:
         """Edit the original message to show the current stage."""
