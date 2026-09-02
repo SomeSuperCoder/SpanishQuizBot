@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -47,8 +48,67 @@ def _ce(custom_id: str, fallback: str) -> RichTextCustomEmoji:
     return RichTextCustomEmoji(custom_emoji_id=custom_id, alternative_text=fallback)
 
 
+# ── Heartbeat infrastructure ───────────────────────────────
+
+# Tracks active heartbeat tasks by draft_id so we can cancel old ones
+# when a new thinking stage starts, and clean up on dismiss.
+_heartbeat_tasks: dict[int, asyncio.Task] = {}
+
+logger = logging.getLogger(__name__)
+
+
+async def _heartbeat_loop(
+    bot, chat_id: int, draft_id: int,
+    emoji_id: str, fallback: str, text: str,
+    interval: float = 5.0,
+) -> None:
+    """Background task that re-sends the thinking draft every *interval* seconds.
+
+    This keeps the Telegram draft "alive" — if the bot takes a long time,
+    the user still sees the animated thinking indicator instead of a stale
+    draft that Telegram might auto-dismiss.
+
+    The loop cancels cleanly on asyncio.CancelledError (normal shutdown path)
+    and logs + survives any other transient failure so a single network blip
+    doesn't kill the heartbeat.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await bot(SendRichMessageDraft(
+                    chat_id=chat_id,
+                    draft_id=draft_id,
+                    rich_message=InputRichMessage(
+                        blocks=[InputRichBlockThinking(text=[_ce(emoji_id, fallback), text])]
+                    ),
+                ))
+            except asyncio.CancelledError:
+                raise  # propagate so the outer handler can clean up
+            except Exception as exc:
+                # Transient failure — log and retry next interval instead of
+                # killing the whole heartbeat.
+                logger.warning(
+                    "Heartbeat refresh failed for draft_id=%s: %s", draft_id, exc
+                )
+    except asyncio.CancelledError:
+        pass  # normal cancellation — exit silently
+
+
 async def _show_thinking(bot, chat_id: int, draft_id: int, emoji_id: str, fallback: str, text: str) -> None:
-    """Send a thinking draft to show the bot is working."""
+    """Send a thinking draft to show the bot is working.
+
+    Starts a background heartbeat that re-sends the same draft every 5 s so
+    the indicator stays fresh during long operations.  If a heartbeat is
+    already running for *draft_id* (e.g. a previous stage), it is cancelled
+    first — each call replaces the old heartbeat.
+    """
+    # Cancel any existing heartbeat for this draft_id (stage replaced)
+    existing = _heartbeat_tasks.get(draft_id)
+    if existing is not None:
+        existing.cancel()
+        _heartbeat_tasks.pop(draft_id, None)
+
     try:
         await bot(SendRichMessageDraft(
             chat_id=chat_id,
@@ -58,11 +118,27 @@ async def _show_thinking(bot, chat_id: int, draft_id: int, emoji_id: str, fallba
             ),
         ))
     except Exception:
-        pass  # private chat only; fail silently
+        pass  # private chat only; fail silently — and don't start heartbeat
+    else:
+        # Draft sent successfully → kick off the heartbeat in the background.
+        task = asyncio.create_task(
+            _heartbeat_loop(bot, chat_id, draft_id, emoji_id, fallback, text)
+        )
+        _heartbeat_tasks[draft_id] = task
 
 
 async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
-    """Dismiss the thinking draft by replacing it with a temporary message, then deleting it."""
+    """Dismiss the thinking draft by replacing it with a temporary message, then deleting it.
+
+    Also cancels any running heartbeat for *draft_id* so the background task
+    doesn't keep re-sending after the draft is gone.
+    """
+    # Stop the heartbeat first — no point refreshing a draft we're about to kill
+    existing = _heartbeat_tasks.get(draft_id)
+    if existing is not None:
+        existing.cancel()
+        _heartbeat_tasks.pop(draft_id, None)
+
     try:
         msg = await bot(SendRichMessage(
             chat_id=chat_id,
@@ -74,7 +150,7 @@ async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
         await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
     except Exception:
         pass  # private chat only; fail silently
-logger = logging.getLogger(__name__)
+
 
 # ── helpers ─────────────────────────────────────────────────
 
