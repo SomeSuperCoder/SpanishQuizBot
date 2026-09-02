@@ -57,7 +57,7 @@ class AIService:
     def __init__(self):
         self.api_url = "https://opencode.ai/zen/v1/chat/completions"
         self.model = "big-pickle"
-        self.timeout = 90.0
+        self.timeout = 600.0  # 10 minutes — LLM inference can be slow
         self.max_retries = 3
         self.base_delay = 1.0
 
