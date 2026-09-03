@@ -168,7 +168,7 @@ async def _send_ru_translation(bot, chat_id: int, poll_message_id: int, quiz, le
     try:
         await bot.send_message(
             chat_id=chat_id,
-            text=f"Перевод: <tg-spoiler>{escape(quiz.ru_title)}</tg-spoiler>",
+            text=f"ipunto помощь: <tg-spoiler>{escape(quiz.ru_title)}</tg-spoiler>",
             parse_mode="HTML",
             reply_to_message_id=poll_message_id,
         )
