@@ -17,6 +17,8 @@ class Quiz:
     options: list[str]
     correct_index: int
     category: str = ""
+    ru_title: str = ""  # Traducción al ruso del título (solo quizzes en español, niveles A1-B1)
+    lang: str = ""  # "es" / "ru" — asignado tras el parseo para identificar el idioma
 
     @property
     def correct_option(self) -> str:
@@ -34,6 +36,8 @@ class Quiz:
             options=[str(o).strip() for o in data["options"]],
             correct_index=int(correct),
             category=str(data.get("category", "")),
+            ru_title=str(data.get("ru_title", "") or "").strip(),
+            lang=str(data.get("lang", "") or "").strip(),
         )
 
 
@@ -91,8 +95,10 @@ class AIService:
                 "Aquí está tu respuesta:\n\n"
                 f"{raw}\n\n"
                 "Por favor, reformátala EXACTAMENTE así, sin texto adicional, sin markdown, sin ```:\n"
-                '{"espanol":[{"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0}],'
-                '"ruso":[{"id":1,"category":"meaning","question":"...","options":["A","B","C","D"],"correct":0}]}'
+                '{"espanol":[{"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0,'
+                '"ru_title":"..."}],'
+                '"ruso":[{"id":1,"category":"meaning","question":"...","options":["A","B","C","D"],"correct":0}]}\n'
+                "Nota: 'ru_title' (traducción al ruso de la pregunta) SOLO aplica a los quizzes de 'espanol'."
             )
             raw2 = await self._call_api_with_retry(system, fix_prompt)
             result = self._try_parse_structured_response(raw2)
@@ -110,6 +116,12 @@ class AIService:
         # Enforce totals
         espanol_quizzes = espanol_quizzes[:total_es]
         ruso_quizzes = ruso_quizzes[:total_ru]
+
+        # Marcar idioma — sobrevive los to/from_dict del almacenamiento FSM
+        for q in espanol_quizzes:
+            q.lang = "es"
+        for q in ruso_quizzes:
+            q.lang = "ru"
 
         # Assign sequential ids
         all_quizzes = espanol_quizzes + ruso_quizzes
@@ -551,12 +563,16 @@ class AIService:
             "- El JSON tiene esta forma exacta:\n"
             '  {"espanol":[...],"ruso":[...]}\n'
             "- Cada quiz dentro de los arrays tiene esta forma:\n"
-            '  {"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0}\n'
+            '  {"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0,"ru_title":"..."}\n'
             "- 'id' = número secuencial empezando en 1 DENTRO de cada array\n"
             "- 'category' = clave de categoría: fill_blank, meaning, synonyms, slang\n"
             "- 'question' = la pregunta clara y concisa\n"
             "- 'options' = entre 3 y 4 opciones de respuesta\n"
             "- 'correct' = índice (0-based) de la respuesta correcta\n"
+            "- 'ru_title' = traducción al ruso del título/pregunta (SOLO para quizzes en español):\n"
+            f"  - Nivel {level}: OBLIGATORIO si el nivel es A1 o A2, opcional (si ayuda a la comprensión) si es B1\n"
+            "  - NO incluir en quizzes de 'ruso'\n"
+            "  - Solo traduce la pregunta, NO las opciones de respuesta\n"
             "- Las preguntas en español deben ser 100% en español\n"
             "- Las preguntas en ruso deben ser 100% en ruso\n"
             "- Las opciones de respuesta pueden estar en el idioma que corresponda\n"

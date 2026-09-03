@@ -160,12 +160,28 @@ def _prefixed_question(quiz: Quiz, level: str) -> str:
     return f"[{level}] {quiz.question}"
 
 
+async def _send_ru_translation(bot, chat_id: int, poll_message_id: int, quiz, level: str) -> None:
+    """Send Russian translation as spoiler reply after a Spanish poll, if applicable."""
+    if quiz.lang != "es" or level not in ("A1", "A2", "B1") or not quiz.ru_title:
+        return
+    from html import escape
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"Перевод: <tg-spoiler>{escape(quiz.ru_title)}</tg-spoiler>",
+            parse_mode="HTML",
+            reply_to_message_id=poll_message_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to send ru_title translation for quiz %s: %s", quiz.id, exc)
+
+
 async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
     """Send a real Telegram quiz poll with level prefix."""
     # Telegram allows max 10 options per poll
     options = quiz.options[:10]
     correct = min(quiz.correct_index, len(options) - 1)
-    await bot.send_poll(
+    msg = await bot.send_poll(
         chat_id=target,
         question=_prefixed_question(quiz, level),
         options=[{"text": opt} for opt in options],
@@ -173,6 +189,7 @@ async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
         correct_option_id=correct,
         is_anonymous=False,
     )
+    await _send_ru_translation(bot, target, msg.message_id, quiz, level)
 
 
 def _build_summary(quizzes: list[Quiz], level: str) -> str:
@@ -967,7 +984,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
 
     try:
         for quiz in quizzes:
-            await callback_query.bot.send_poll(
+            msg = await callback_query.bot.send_poll(
                 chat_id=channel_id,
                 question=_prefixed_question(quiz, level),
                 options=[{"text": opt} for opt in quiz.options],
@@ -975,6 +992,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
                 correct_option_id=quiz.correct_index,
                 is_anonymous=True,
             )
+            await _send_ru_translation(callback_query.bot, channel_id, msg.message_id, quiz, level)
 
         await callback_query.message.edit_text(
             f"🚀 ¡{len(quizzes)} quizzes nivel {level} — {dialect} publicados!\n\n"
@@ -1090,7 +1108,7 @@ async def _run_scheduled_publish(
 
     for i, quiz in enumerate(quizzes):
         try:
-            await bot.send_poll(
+            msg = await bot.send_poll(
                 chat_id=channel_id,
                 question=_prefixed_question(quiz, level),
                 options=[{"text": opt} for opt in quiz.options],
@@ -1098,6 +1116,7 @@ async def _run_scheduled_publish(
                 correct_option_id=quiz.correct_index,
                 is_anonymous=True,
             )
+            await _send_ru_translation(bot, channel_id, msg.message_id, quiz, level)
             published = i + 1
         except Exception:
             logger.exception("Failed to publish quiz %d/%d", published + 1, total)
@@ -1190,6 +1209,8 @@ async def handle_improvement(message: Message, state: FSMContext):
     await _dismiss_thinking(message.bot, message.chat.id, 4)
 
     # Replace the edited quiz in the list
+    edited_quiz.lang = quizzes[editing_id - 1].lang  # preserve language tag from original
+    edited_quiz.ru_title = quizzes[editing_id - 1].ru_title  # preserve Russian title from original
     edited_quiz.id = editing_id
     quizzes[editing_id - 1] = edited_quiz
 
