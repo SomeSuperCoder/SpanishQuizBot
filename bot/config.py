@@ -6,11 +6,7 @@ class Settings(BaseSettings):
     whitelist_usernames: List[str] = []
     database_path: str = "bot.db"
     proxy_url: str = "http://127.0.0.1:10809"
-
-    # Vercel / webhook mode
-    webhook_url: str = ""          # e.g. "https://your-project.vercel.app"
-    deployment_mode: str = "polling"  # "polling" | "webhook"
-
+    
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 settings = Settings()
