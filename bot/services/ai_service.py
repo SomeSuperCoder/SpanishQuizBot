@@ -3,6 +3,7 @@ import httpx
 import json
 import logging
 import re
+import secrets
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -464,8 +465,15 @@ class AIService:
         raise AIServiceError("AI service failed after retries", category="EXTERNAL", status_code=502)
 
     async def _call_api(self, system_prompt: str, user_prompt: str) -> str:
+        # OpenCode API requires client-identification headers — without them, 400.
+        session_id = "ses_" + secrets.token_hex(12)
+        request_id = "req_" + secrets.token_hex(12)
         headers = {
             "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "x-opencode-client": "opencode",
+            "x-opencode-session": session_id,
+            "x-opencode-request": request_id,
             "User-Agent": "opencode/1.18.15",
         }
         payload = {
