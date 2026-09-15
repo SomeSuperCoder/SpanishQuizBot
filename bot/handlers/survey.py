@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -28,6 +29,7 @@ from bot.keyboards.inline import (
     get_edit_done_keyboard,
     get_cancel_keyboard,
     get_post_accumulation_keyboard,
+    get_scheduled_keyboard,
 )
 from bot.states.survey import SurveyCreation
 from bot.services.ai_service import AIService, AIServiceError, Quiz, AutoDetected
@@ -1076,11 +1078,13 @@ async def handle_schedule_interval(message: Message, state: FSMContext):
         f"📍 Canal: {channel_title or channel_id}\n\n"
         f"🚀 Publicando el primero ahora...",
         parse_mode="Markdown",
+        reply_markup=get_scheduled_keyboard(f"scheduled_{message.chat.id}_{int(time.time())}"),
     )
 
     # Launch background scheduler
     import asyncio
-    asyncio.create_task(
+    task_id = f"scheduled_{message.chat.id}_{int(time.time())}"
+    task = asyncio.create_task(
         _run_scheduled_publish(
             bot=message.bot,
             channel_id=channel_id,
@@ -1091,6 +1095,7 @@ async def handle_schedule_interval(message: Message, state: FSMContext):
             topic=topic,
             interval=interval,
             chat_id=message.chat.id,
+            task_id=task_id,
         )
     )
 
@@ -1098,62 +1103,83 @@ async def handle_schedule_interval(message: Message, state: FSMContext):
 async def _run_scheduled_publish(
     bot, channel_id: int, channel_title: str | None,
     quizzes: list[Quiz], level: str, dialect: str, topic: str,
-    interval: int, chat_id: int,
+    interval: int, chat_id: int, task_id: str,
 ) -> None:
     """Background task: publish quizzes one by one with a delay between each."""
     import asyncio
+    from bot.services.job_registry import job_registry
+
+    # Register this task in the registry
+    await job_registry.register(task_id, asyncio.current_task())
 
     published = 0
     total = len(quizzes)
 
-    for i, quiz in enumerate(quizzes):
-        try:
-            msg = await bot.send_poll(
-                chat_id=channel_id,
-                question=_prefixed_question(quiz, level),
-                options=[{"text": opt} for opt in quiz.options],
-                type="quiz",
-                correct_option_id=quiz.correct_index,
-                is_anonymous=True,
-            )
-            await _send_ru_translation(bot, channel_id, msg.message_id, quiz, level)
-            published = i + 1
-        except Exception:
-            logger.exception("Failed to publish quiz %d/%d", published + 1, total)
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ Error al publicar quiz #{quiz.id}. "
-                         f"Publicados: {published}/{total}. "
-                         "Verifica que el bot sea administrador del canal.",
-                )
-            except Exception:
-                pass
-            return
-
-        # Progress update after each publish
-        if published < total:
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"✅ Publicado {published}/{total} — "
-                         f"próximo en {format_interval(interval)}",
-                )
-            except Exception:
-                pass
-            await asyncio.sleep(interval)
-
-    # Done
     try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"🚀 ¡{total} quizzes nivel {level} — {dialect} publicados!\n\n"
-                 f"📍 Canal: {channel_title or channel_id}\n"
-                 f"📊 Tema: {topic}",
-            reply_markup=get_start_keyboard(),
-        )
-    except Exception:
-        pass
+        for i, quiz in enumerate(quizzes):
+            try:
+                msg = await bot.send_poll(
+                    chat_id=channel_id,
+                    question=_prefixed_question(quiz, level),
+                    options=[{"text": opt} for opt in quiz.options],
+                    type="quiz",
+                    correct_option_id=quiz.correct_index,
+                    is_anonymous=True,
+                )
+                await _send_ru_translation(bot, channel_id, msg.message_id, quiz, level)
+                published = i + 1
+            except Exception:
+                logger.exception("Failed to publish quiz %d/%d", published + 1, total)
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"❌ Error al publicar quiz #{quiz.id}. "
+                             f"Publicados: {published}/{total}. "
+                             "Verifica que el bot sea administrador del canal.",
+                    )
+                except Exception:
+                    pass
+                return
+
+            # Progress update after each publish
+            if published < total:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ Publicado {published}/{total} — "
+                             f"próximo en {format_interval(interval)}",
+                        reply_markup=get_scheduled_keyboard(task_id),
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(interval)
+
+        # Done - normal completion
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"🚀 ¡{total} quizzes nivel {level} — {dialect} publicados!\n\n"
+                     f"📍 Canal: {channel_title or channel_id}\n"
+                     f"📊 Tema: {topic}",
+                reply_markup=get_start_keyboard(),
+            )
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        # Task was cancelled by user
+        logger.info(f"Scheduled publish task {task_id} cancelled after {published}/{total}")
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⛔ Publicaciones detenidas.\n\n"
+                     f"Se publicaron {published} de {total} quizzes.",
+                reply_markup=get_start_keyboard(),
+            )
+        except Exception:
+            pass
+    finally:
+        # Always unregister from registry
+        await job_registry.unregister(task_id)
 
 
 @router.callback_query(SurveyCreation.reviewing, F.data.startswith("edit_select:"))
@@ -1228,6 +1254,29 @@ async def handle_improvement(message: Message, state: FSMContext):
         f"{summary}\n\n¿Qué quieres hacer?",
         reply_markup=get_edit_done_keyboard(),
     )
+
+
+@router.callback_query(F.data.startswith("cancel_scheduled:"))
+async def handle_cancel_scheduled(callback_query: CallbackQuery, state: FSMContext):
+    """Cancel a running scheduled publication cascade."""
+    from bot.services.job_registry import job_registry
+    
+    task_id = callback_query.data.split(":")[1]
+    cancelled = await job_registry.cancel(task_id)
+    
+    if cancelled:
+        await callback_query.message.edit_text(
+            "✅ Cascada de publicaciones detenida.",
+            reply_markup=get_start_keyboard(),
+        )
+    else:
+        await callback_query.message.edit_text(
+            "⚠️ No se encontró una cascada activa.\n\n"
+            "Es posible que ya haya finalizado.",
+            reply_markup=get_start_keyboard(),
+        )
+    
+    await callback_query.answer()
 
 
 # ── cancel ──────────────────────────────────────────────────

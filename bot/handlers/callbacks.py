@@ -2,7 +2,8 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-from bot.keyboards.inline import get_start_keyboard
+from bot.database.repository import BotConfigRepository
+from bot.keyboards.inline import get_start_keyboard, get_channel_menu_keyboard
 
 router = Router()
 
@@ -48,3 +49,52 @@ async def handle_create_survey_fallback(callback_query: CallbackQuery, state: FS
         return
     
     await callback_query.answer()
+
+
+@router.callback_query(F.data == "view_channel")
+async def handle_view_channel(callback_query: CallbackQuery):
+    """Show linked channel info or instructions to link one."""
+    channel_id = await BotConfigRepository.get_channel_id()
+    channel_title = await BotConfigRepository.get_channel_title()
+
+    if channel_id and channel_title:
+        text = (
+            f"📺 Canal vinculado: {channel_title}\n\n"
+            f"ID: {channel_id}"
+        )
+    else:
+        text = (
+            "ℹ️ No hay ningún canal vinculado.\n\n"
+            "Para vincular un canal, ábreme en el canal con /link"
+        )
+
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=get_channel_menu_keyboard(has_channel=bool(channel_id and channel_title)),
+    )
+
+
+@router.callback_query(F.data == "unlink_channel")
+async def handle_unlink_channel(callback_query: CallbackQuery):
+    """Clear linked channel and confirm."""
+    await BotConfigRepository.set("channel_id", "")
+    await BotConfigRepository.set("channel_title", "")
+
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        "✅ Canal desvinculado correctamente.",
+        reply_markup=get_start_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "back_to_start")
+async def handle_back_to_start(callback_query: CallbackQuery):
+    """Return to the start menu."""
+    welcome_text = "¿Qué quieres hacer?"
+
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        welcome_text,
+        reply_markup=get_start_keyboard(),
+    )

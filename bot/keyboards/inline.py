@@ -54,8 +54,17 @@ def get_category_counter_keyboard(
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Crear encuesta", callback_data="create_survey")]
+        [InlineKeyboardButton(text="📝 Crear encuesta", callback_data="create_survey")],
+        [InlineKeyboardButton(text="📺 Canal vinculado", callback_data="view_channel")],
     ])
+
+
+def get_channel_menu_keyboard(has_channel: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if has_channel:
+        rows.append([InlineKeyboardButton(text="❌ Desvincular canal", callback_data="unlink_channel")])
+    rows.append([InlineKeyboardButton(text="↩️ Volver", callback_data="back_to_start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_topic_mode_keyboard() -> InlineKeyboardMarkup:
@@ -150,4 +159,14 @@ def get_post_accumulation_keyboard(post_count: int) -> InlineKeyboardMarkup:
             text=f"🚀 Generar desde {'este' if singular else 'estos'}",
             callback_data="post_generate",
         )],
+    ])
+
+
+def get_scheduled_keyboard(task_id: str) -> InlineKeyboardMarkup:
+    """Keyboard for scheduled publications with cancel button."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="⏹️ Detener publicaciones",
+            callback_data=f"cancel_scheduled:{task_id}"
+        )]
     ])
