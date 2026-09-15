@@ -1,0 +1,35 @@
+{
+  "task": "Force Stop Implementation",
+  "waves": [
+    {
+      "name": "implement",
+      "status": "COMPLETE",
+      "agents": [
+        {
+          "id": "senior-developer",
+          "task_id": "ses_f5a438b85ffes7uPFuStUYEFS4",
+          "status": "DONE",
+          "description": "Implement force stop feature"
+        }
+      ]
+    },
+    {
+      "name": "verify",
+      "status": "COMPLETE",
+      "agents": [
+        {
+          "id": "tester",
+          "task_id": null,
+          "status": "DONE",
+          "description": "Verified force stop implementation"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Force stop implementation complete and verified",
+    "Feature allows users to immediately halt bot operations"
+  ],
+  "created_at": "2026-09-15T00:00:00Z",
+  "updated_at": "2026-09-15T18:00:00Z"
+}

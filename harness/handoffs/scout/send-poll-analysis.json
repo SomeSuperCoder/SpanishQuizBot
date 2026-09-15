@@ -1,0 +1,36 @@
+{
+  "headers": {
+    "timestamp": "2026-09-15T19:37:31Z",
+    "agent_id": "scout",
+    "session_start": "2026-09-15T00:00:00Z",
+    "session_end": "2026-09-15T19:37:31Z",
+    "vector": "N/A"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "3 send_poll calls in bot/handlers/survey.py: lines 186, 989, 1121",
+        "Line 186: _send_quiz_preview() — preview to user, is_anonymous=False, no channel_id",
+        "Line 989: handle_publish callback — publish to channel_id, is_anonymous=True",
+        "Line 1121: _run_scheduled_publish() — scheduled publish to channel_id, is_anonymous=True",
+        "All 3 calls use type=quiz, correct_option_id, options=[{text: opt}]",
+        "No disable_notification parameter is used anywhere in the codebase",
+        "aiogram send_poll supports disable_notification: bool | None = None — sends silently (no sound)"
+      ],
+      "call_chains": [
+        "_send_quiz_preview() [line 181] -> bot.send_poll() [line 186]",
+        "handle_publish [line 989] -> bot.send_poll() [line 989]",
+        "_run_scheduled_publish() -> bot.send_poll() [line 1121]"
+      ],
+      "blast_radius": [
+        "bot/handlers/survey.py — only file with send_poll calls"
+      ],
+      "research_sources": [
+        "https://github.com/aiogram/aiogram/blob/dev-3.x/docs/api/methods/send_poll.rst",
+        "Telegram Bot API sendPoll: disable_notification sends messages silently (no sound)"
+      ]
+    },
+    "for_supervisor": "Found 3 send_poll call sites in bot/handlers/survey.py (lines 186, 989, 1121). None use disable_notification. aiogram supports it as disable_notification: bool | None = None. Adding it is a one-line change at each call site. The parameter is inherited from Telegram Bot API — sends the poll silently without notification sound.",
+    "for_successor": "Senior Developer — add disable_notification=True (or configurable) to the send_poll calls at lines 989 and 1121 (channel publishes). Line 186 is a preview to the user and may not need it."
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "headers": {
+    "timestamp": "2026-09-15T00:00:00Z",
+    "agent_id": "scout"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "Scheduling uses asyncio.create_task() — NO external job queue (no APScheduler, Celery, or RQ)",
+        "Scheduled tasks are fire-and-forget asyncio Tasks stored ONLY in memory — lost on bot restart",
+        "No job registry, no persistence layer for scheduled publications",
+        "No cancel/stop mechanism for scheduled publication cascades",
+        "The cascade is a simple for-loop with asyncio.sleep() between publishes",
+        "Bot state (FSMContext) is cleared immediately when scheduling starts — quizzes exist only in aiogram FSM state",
+        "Database has surveys table but it is NOT used for scheduled publications — it stores completed surveys only",
+        "No requirements for APScheduler/Celery in pyproject.toml — pure asyncio approach"
+      ],
+      "call_chain": [
+        "user clicks ⏰ Programar → handle_schedule() [line 1018] → sets state waiting_schedule_interval",
+        "user sends interval → handle_schedule_interval() [line 1038] → parse_interval() [line 206] → validates → asyncio.create_task(_run_scheduled_publish()) [line 1083]",
+        "_run_scheduled_publish() [line 1098] → for-loop: bot.send_poll() → asyncio.sleep(interval) → repeat"
+      ],
+      "blast_radius": [
+        "bot/handlers/survey.py — all scheduling logic lives here (lines 203-258, 1018-1156)",
+        "bot/states/survey.py — SurveyCreation.waiting_schedule_interval state (line 17)",
+        "bot/keyboards/inline.py — survey_schedule callback button (lines 121, 142)",
+        "bot/database/connection.py — surveys table schema (NOT used for scheduling, only for completed surveys)",
+        "bot/database/repository.py — SurveyRepository (NOT used for scheduling)"
+      ],
+      "research_sources": []
+    },
+    "for_supervisor": "VERIFIED: The scheduling system is a simple fire-and-forget asyncio task with NO persistence, NO job registry, and NO cancel mechanism. The cascade is a for-loop with asyncio.sleep() between publishes. If the bot restarts, all scheduled publications are lost. There is no way to cancel a running scheduled cascade — the survey_cancel handler only clears FSM state, not the background task. The quizzes exist only in aiogram FSM memory during scheduling.",
+    "for_successor": "To implement cancel/stop for scheduled publications, you would need to: (1) Create a job registry to track active asyncio.Task objects, (2) Store scheduled publication state (quizzes, interval, progress) in a persistent store, (3) Add a cancel handler that retrieves and cancels the active task, (4) Handle asyncio.CancelledError gracefully in _run_scheduled_publish."
+  }
+}

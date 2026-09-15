@@ -3,6 +3,8 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -160,6 +162,13 @@ async def _dismiss_thinking(bot, chat_id: int, draft_id: int) -> None:
 def _prefixed_question(quiz: Quiz, level: str) -> str:
     """Add level prefix to quiz question."""
     return f"[{level}] {quiz.question}"
+
+
+def is_nighttime_moscow() -> bool:
+    """Check if current time in Moscow is nighttime (22:00-7:00)."""
+    moscow_tz = ZoneInfo("Europe/Moscow")
+    now = datetime.now(moscow_tz)
+    return now.hour >= 22 or now.hour < 7
 
 
 async def _send_ru_translation(bot, chat_id: int, poll_message_id: int, quiz, level: str) -> None:
@@ -993,6 +1002,7 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
                 type="quiz",
                 correct_option_id=quiz.correct_index,
                 is_anonymous=True,
+                disable_notification=is_nighttime_moscow(),
             )
             await _send_ru_translation(callback_query.bot, channel_id, msg.message_id, quiz, level)
 
@@ -1125,6 +1135,7 @@ async def _run_scheduled_publish(
                     type="quiz",
                     correct_option_id=quiz.correct_index,
                     is_anonymous=True,
+                    disable_notification=is_nighttime_moscow(),
                 )
                 await _send_ru_translation(bot, channel_id, msg.message_id, quiz, level)
                 published = i + 1

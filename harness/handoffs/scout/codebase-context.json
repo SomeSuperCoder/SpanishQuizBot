@@ -1,0 +1,45 @@
+{
+  "headers": {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "agent_id": "scout",
+    "session_start": "2025-01-01T00:00:00Z",
+    "session_end": "2025-01-01T00:00:00Z",
+    "vector": "no-ops-board"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "Framework: aiogram >=3.26 (NOT python-telegram-bot). async/await, Router-based dispatch.",
+        "Project structure: bot/main.py -> Dispatcher -> 3 routers: start_router, survey_router, callbacks_router",
+        "/start handler: bot/handlers/start.py -> cmd_start() -> get_start_keyboard()",
+        "Start keyboard has ONE button: 'Crear encuesta' (callback_data='create_survey') at bot/keyboards/inline.py:55-58",
+        "Channel linking: via /link command in channel_post OR bot added to chat. Stores in bot_config table as key-value pairs (channel_id, channel_title)",
+        "Data model: SQLite with 3 tables: users (telegram_id, username, first_name), surveys (user_id, topic, content, options, correct_index, status, channel_id, message_id), bot_config (key, value)",
+        "Channel is GLOBAL (single channel) - stored as bot_config keys, NOT per-user. BotConfigRepository.get_channel_id() returns the one linked channel.",
+        "BotConfigRepository: simple key-value get/set on bot_config table. get_channel_id() and get_channel_title() are convenience wrappers.",
+        "FSM states: SurveyCreation StatesGroup in bot/states/survey.py with 14 states",
+        "Keyboard pattern: each keyboard is a function returning InlineKeyboardMarkup in bot/keyboards/inline.py. Buttons use callback_data strings with colon-separated namespaces.",
+        "Callback pattern: survey.py handles stateful callbacks via FSM state filters. callbacks.py handles edge-case/expired callbacks.",
+        "All keyboards are inline (InlineKeyboardMarkup), no ReplyKeyboardMarkup used.",
+        "Middleware: WhitelistMiddleware on messages and callback_queries (bot/middleware/whitelist.py)"
+      ],
+      "call_chains": [
+        "cmd_start -> UserRepository.get_or_create -> get_start_keyboard -> message.answer",
+        "create_survey callback -> handle_create_survey -> get_topic_mode_keyboard",
+        "handle_publish -> BotConfigRepository.get_channel_id -> bot.send_poll to channel",
+        "handle_bot_added_to_chat -> BotConfigRepository.set(channel_id, channel_title)"
+      ],
+      "blast_radius": [
+        "bot/keyboards/inline.py - where all keyboards are defined (add new button here)",
+        "bot/handlers/start.py - where /start handler and channel linking live",
+        "bot/handlers/callbacks.py - expired callback fallback reuses get_start_keyboard()",
+        "bot/handlers/survey.py - many places call get_start_keyboard() as home button on errors/cancel",
+        "bot/database/connection.py - schema definition (add tables/columns here)",
+        "bot/database/repository.py - data access layer (add new repository here)"
+      ],
+      "research_sources": []
+    },
+    "for_supervisor": "VERDICT: Full codebase context gathered. The /start keyboard is a single button ('Crear encuesta') defined in get_start_keyboard() at bot/keyboards/inline.py:55-58. Channel linking is GLOBAL (single channel stored as bot_config key-value pairs, not per-user). The data model is SQLite with users, surveys, and bot_config tables. Key patterns: all keyboards are functions returning InlineKeyboardMarkup, callbacks use colon-separated namespace strings, FSM states control flow. To add a new button+menu: (1) add keyboard function in inline.py, (2) add callback handler in appropriate router, (3) optionally add FSM states if interactive, (4) optionally add repository methods if new data is needed.",
+    "for_successor": "senior-developer: Read the start keyboard at bot/keyboards/inline.py:55-58 (get_start_keyboard). Add new button(s) there. Add callback handler in bot/handlers/ or a new handler file. Follow existing pattern: callback_data='prefix:action', FSM state guard on handler, InlineKeyboardMarkup for response keyboards. Channel data is in bot_config table via BotConfigRepository."
+  }
+}

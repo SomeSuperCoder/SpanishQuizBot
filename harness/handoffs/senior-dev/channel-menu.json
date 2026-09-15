@@ -1,0 +1,30 @@
+{
+  "headers": {
+    "timestamp": "2026-09-15T18:44:48Z",
+    "agent_id": "senior-dev",
+    "vector": "implement"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "get_start_keyboard() now has 2 buttons: Crear encuesta + Canal vinculado",
+        "get_channel_menu_keyboard(has_channel: bool) added to inline.py",
+        "3 new handlers in callbacks.py: view_channel, unlink_channel, back_to_start",
+        "BotConfigRepository imported in callbacks.py for channel access",
+        "Channel clearing pattern: set both keys to empty string"
+      ],
+      "call_chains": [
+        "view_channel callback -> BotConfigRepository.get_channel_id() -> get_channel_menu_keyboard() -> edit_text",
+        "unlink_channel callback -> BotConfigRepository.set() x2 -> get_start_keyboard() -> edit_text",
+        "back_to_start callback -> get_start_keyboard() -> edit_text"
+      ],
+      "blast_radius": [
+        "bot/keyboards/inline.py (modified: get_start_keyboard + new get_channel_menu_keyboard)",
+        "bot/handlers/callbacks.py (modified: 3 new handlers + imports)"
+      ],
+      "research_sources": []
+    },
+    "for_supervisor": "GREEN. Implemented View Linked Channel feature exactly per spec. Two files modified: bot/keyboards/inline.py (added button to get_start_keyboard, added get_channel_menu_keyboard function) and bot/handlers/callbacks.py (added view_channel, unlink_channel, back_to_start handlers). All handlers follow existing patterns: Spanish text, emoji prefixes, callback.answer() before edit_text. Both files pass py_compile. No other files touched.",
+    "for_successor": "Tester — verify the 3 new callback handlers in bot/handlers/callbacks.py work correctly: view_channel shows channel info or link instructions, unlink_channel clears config and returns to start, back_to_start restores welcome text. Also verify get_start_keyboard shows 2 buttons and get_channel_menu_keyboard renders correctly based on has_channel flag."
+  }
+}
