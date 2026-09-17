@@ -1,0 +1,51 @@
+{
+  "headers": {
+    "timestamp": "2026-09-17T21:27:27Z",
+    "agent_id": "scout",
+    "session_start": "2026-09-17T21:27:27Z",
+    "session_end": "2026-09-17T21:27:27Z",
+    "vector": "Force Stop Implementation"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "Project: BotDeEncuestas — AI-powered Telegram quiz generator for Spanish learners",
+        "Stack: Python 3.10+ / aiogram 3.x / aiosqlite / httpx / pydantic-settings / Hatchling / uv",
+        "Entry point: bot/main.py → main() → asyncio.run(_async_main()) — registered as console_scripts bot",
+        "AI provider: OpenCode Zen API at https://opencode.ai/zen/v1/chat/completions (model: nemotron-3.5-lightning-free)",
+        "AI integration: bot/services/ai_service.py — AIService class, direct HTTP via httpx (NOT using opencode CLI)",
+        "Headers: x-opencode-client, x-opencode-session, x-opencode-request, User-Agent: opencode/1.18.15",
+        "No Authorization header or API key required — client identification headers only",
+        "Config: bot/config.py — pydantic-settings, reads .env (BOT_TOKEN, WHITELIST_USERNAMES, DATABASE_PATH, PROXY_URL)",
+        "No opencode.json or .opencode/ exists in project root — no CLI integration configured",
+        "Proxy: aiohttp-socks for Telegram API, httpx proxy passthrough for AI calls via active_proxy_url global",
+        "Database: SQLite via aiosqlite — 3 tables: users, surveys, bot_config",
+        "FSM: 14 states in SurveyCreation StatesGroup for multi-step quiz flow",
+        "Handlers: start.py, survey.py (1304 lines, main flow), callbacks.py",
+        "Services: ai_service.py (631 lines), job_registry.py (in-memory task tracker)",
+        "Tests: only tests/test_thinking_heartbeat.py exists"
+      ],
+      "call_chains": [
+        "main.py:main → _async_main → init_db → Bot → Dispatcher → routers → handlers",
+        "survey.py:_generate_and_preview → AIService.generate_quizzes → _call_api_with_retry → _call_api → httpx.post(opencode.ai)",
+        "survey.py → AIService.review_quizzes → _call_api_with_retry",
+        "survey.py → AIService.edit_quiz → _call_api_with_retry",
+        "survey.py → AIService.determine_topic → _call_api_with_retry",
+        "survey.py → AIService.determine_category_counts → _call_api_with_retry"
+      ],
+      "blast_radius": [
+        "bot/services/ai_service.py — primary file for opencode integration change",
+        "bot/config.py — would need new env vars for CLI mode",
+        "bot/main.py — entry point, would need CLI mode branching",
+        "pyproject.toml — new console_scripts entry for CLI",
+        ".env / .env.example — new configuration variables"
+      ],
+      "research_sources": [
+        "https://opencode.ai/zen/v1/chat/completions",
+        "docs/OPENCODE_API_USAGE_SUMMARY.md"
+      ]
+    },
+    "for_supervisor": "VERDICT: The project uses OpenCode ONLY as an external AI API endpoint (HTTP POST to opencode.ai/zen/v1/chat/completions) via direct httpx calls in ai_service.py. There is NO opencode CLI integration, NO opencode.json, NO .opencode/ directory. The AIService class hardcodes the API URL, model name, and client-identification headers. All 5 AI operations go through _call_api → httpx.post. For CLI integration, the key change point is bot/services/ai_service.py (replace httpx calls with subprocess/CLI) and bot/config.py (add CLI mode settings).",
+    "for_successor": "Senior Developer — read bot/services/ai_service.py (AIService class, _call_api at line 467-499) and bot/config.py. Microtask: design and implement CLI integration for opencode alongside existing API mode. Consider: (1) MODE setting in config.py, (2) _call_cli method in AIService, (3) pyproject.toml entry point update."
+  }
+}

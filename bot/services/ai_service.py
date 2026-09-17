@@ -1,9 +1,7 @@
 import asyncio
-import httpx
 import json
 import logging
 import re
-import secrets
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -83,10 +81,9 @@ class AIService:
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
 
-        system = self._system_prompt_generate(count_es, count_ru, level, dialect, examples, forwarded_posts)
-        user = f"Crea quizzes sobre: {topic}"
+        user = self._build_generate_user_prompt(topic, count_es, count_ru, level, dialect, examples, forwarded_posts)
 
-        raw = await self._call_api_with_retry(system, user)
+        raw = await self._call_api_with_retry(user)
         result = self._try_parse_structured_response(raw)
 
         if result is None:
@@ -101,7 +98,7 @@ class AIService:
                 '"ruso":[{"id":1,"category":"meaning","question":"...","options":["A","B","C","D"],"correct":0}]}\n'
                 "Nota: 'ru_title' (traducción al ruso de la pregunta) SOLO aplica a los quizzes de 'espanol'."
             )
-            raw2 = await self._call_api_with_retry(system, fix_prompt)
+            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt)
             result = self._try_parse_structured_response(raw2)
 
             if result is None:
@@ -141,29 +138,8 @@ class AIService:
                 "Determina un tema que unifique TODOS los posts.\n"
             )
 
-        system = (
-            "Eres un experto en enseñanza de español para rusohablantes.\n"
-            "Recibes el texto de un mensaje reenviado de un canal de español.\n"
-            "Tu tarea: determinar el TEMA, extraer oraciones, nivel CEFR y dialecto.\n\n"
-            "REGLAS:\n"
-            "- Responde SOLO con JSON válido, sin texto adicional\n"
-            "- El JSON tiene esta forma:\n"
-            '  {"topic":"...","examples":["..."],"level":"B1","dialect":"Castellano"}\n'
-            "- 'topic' = tema conciso (2-5 palabras)\n"
-            "- 'examples' = TODAS las oraciones/frases del mensaje que contengan español.\n"
-            "  Extrae CADA oración completa. No omitas ninguna.\n"
-            "  Son la BASE para crear los quizzes, necesitamos todas.\n"
-            "- 'level' = nivel CEFR aproximado del contenido (A1, A2, B1, B2, C1, C2).\n"
-            "  Analiza la complejidad gramatical y vocabulario para determinarlo.\n"
-            "- 'dialect' = dialecto detectado del contenido:\n"
-            "  - 'Castellano' (por defecto si no se detecta otro)\n"
-            "  - 'Mexicano' (si usa vocabulario/gramática de México)\n"
-            "  - 'Argentino' (si usa vocabulario/gramática de Argentina)\n"
-            "- Si el texto no contiene material de español:\n"
-            '  {"topic":"NO_TOPIC","examples":[],"level":"A1","dialect":"Castellano"}'
-            f"{multi_post_context}"
-        )
-        raw = await self._call_api_with_retry(system, text)
+        user = self._build_topic_user_prompt(text, is_multi_post, multi_post_context)
+        raw = await self._call_api_with_retry(user)
 
         # Parse JSON
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
@@ -210,36 +186,8 @@ class AIService:
         Returns (counts_es, counts_ru) with values 0+ per category.
         The AI decides what makes sense given the content.
         """
-        system = (
-            "Eres un experto en crear quizzes de español para rusohablantes.\n"
-            "Recibes un tema, oraciones de ejemplo, y las cantidades actuales por categoría.\n"
-            "Tu tarea: sugerir las cantidades óptimas de quizzes por categoría e idioma.\n\n"
-            "REGLAS:\n"
-            "- Responde SOLO con JSON válido, sin texto adicional\n"
-            "- El JSON tiene esta forma:\n"
-            '  {"espanol":{"fill_blank":2,"meaning":1,"synonyms":1,"slang":0},'
-            '"ruso":{"fill_blank":1,"meaning":2,"synonyms":0,"slang":1}}\n'
-            "- Cada valor es un número entero >= 0 (sin máximo — elige la cantidad óptima)\n"
-            "- El total por idioma debe ser al menos 1 (nunca 0 quizzes en un idioma)\n"
-            "- Analiza las oraciones para decidir qué categorías encajan mejor:\n"
-            "  - fill_blank: oraciones con vocabulario que se pueda ocultar\n"
-            "  - meaning: expresiones con significado contextual\n"
-            "  - synonyms: palabras que tengan sinónimos/antónimos claros\n"
-            "  - slang: expresiones coloquiales o informales\n"
-            "- Si el contenido no permite ciertas categorías, pon 0\n"
-            "- Diversifica: no pongas todo en una sola categoría"
-        )
-        examples_text = "\n".join(f"  - {e}" for e in examples[:20]) if examples else "(sin ejemplos)"
-        user = (
-            f"Tema: {topic}\n"
-            f"Nivel: {level} | Dialecto: {dialect}\n\n"
-            f"Oraciones de ejemplo:\n{examples_text}\n\n"
-            f"Cantidades actuales:\n"
-            f"  Español: {count_es}\n"
-            f"  Ruso: {count_ru}\n\n"
-            "Sugerencias las cantidades óptimas de quizzes por categoría e idioma."
-        )
-        raw = await self._call_api_with_retry(system, user)
+        user = self._build_category_counts_user_prompt(topic, examples, count_es, count_ru, level, dialect)
+        raw = await self._call_api_with_retry(user)
 
         # Parse JSON
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
@@ -289,41 +237,10 @@ class AIService:
         Returns a list of issues: [{"id": 3, "issue": "...", "fix": {...}}, ...]
         Empty list = no issues found.
         """
-        system = (
-            "Eres un revisor experto de quizzes de español para rusohablantes.\n"
-            "Recibes una lista de quizzes y debes encontrar ERRORES TÉCNICOS.\n\n"
-            "ERRORES A DETECTAR:\n"
-            "1. RESPUESTA CORRECTA MAL: el campo 'correct' apunta a la opción equivocada\n"
-            "2. RESPUESTA EN LA PREGUNTA: la respuesta correcta aparece en el texto de la pregunta\n"
-            "3. REPETICIÓN: dos quizzes usan la misma oración/pregunta casi idéntica\n"
-            "4. OPCIONES SIMILARES DOS: dos opciones de respuesta son prácticamente lo mismo\n"
-            "5. OPCIONES SIMILARES TRES+: tres o más opciones son muy parecidas\n"
-            "6. CATEGORÍA MAL: la categoría no corresponde al tipo de pregunta\n"
-            "7. PREGUNTA VACÍA O MAL: la pregunta no tiene sentido o está incompleta\n"
-            "8. OPCIONES INSUFICIENTES: menos de 3 opciones válidas\n"
-            "9. DUPLICADO EXACTO: dos quizzes tienen la misma pregunta\n\n"
-            "NO DETECTES (eso es gusto del usuario):\n"
-            "- Estilo o tono de la pregunta\n"
-            "- Si el tema es interesante o no\n"
-            "- Si el nivel de dificultad es adecuado\n\n"
-            "REGLAS DE RESPUESTA:\n"
-            "- Responde SOLO con JSON válido, sin texto adicional\n"
-            "- Si NO hay errores: {\"issues\":[]}\n"
-            "- Si HAY errores: {\"issues\":[{\"id\":3,\"issue\":\"...\",\"fix\":{\"question\":\"...\",\"options\":[...],\"correct\":0}}]}\n"
-            "- 'id' = el id del quiz con problema\n"
-            "- 'issue' = descripción breve del problema\n"
-            "- 'fix' = la versión corregida del quiz completo (question, options, correct, category)\n"
-            "- Si un quiz tiene múltiples problemas, incluye UN solo fix que los resuelva todos\n"
-            "- NO corrijas el id ni la categoría del quiz, solo question, options y correct"
-        )
-
         quizzes_data = [q.to_dict() for q in quizzes]
-        user = (
-            f"Tema: {topic} | Nivel: {level} | Dialecto: {dialect}\n\n"
-            f"Quizzes a revisar:\n{json.dumps(quizzes_data, ensure_ascii=False, indent=2)}"
-        )
+        user = self._build_review_user_prompt(quizzes_data, topic, level, dialect)
 
-        raw = await self._call_api_with_retry(system, user)
+        raw = await self._call_api_with_retry(user, agent="quiz-reviewer")
 
         # Parse JSON
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
@@ -349,10 +266,9 @@ class AIService:
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> Quiz:
         """Edit a single quiz (PATCH style). Returns only the modified quiz."""
-        system = self._system_prompt_edit()
-        user = self._edit_user_prompt(topic, history, quiz_id, feedback)
+        user = self._build_edit_user_prompt(topic, history, quiz_id, feedback)
 
-        raw = await self._call_api_with_retry(system, user)
+        raw = await self._call_api_with_retry(user)
         quiz = self._try_parse_single_quiz(raw)
 
         if quiz is None:
@@ -365,7 +281,7 @@ class AIService:
                 "sin texto adicional, sin markdown, sin ```:\n"
                 '{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}'
             )
-            raw2 = await self._call_api_with_retry(self._system_prompt_edit(), fix_prompt)
+            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt)
             quiz = self._try_parse_single_quiz(raw2)
 
             if quiz is None:
@@ -436,27 +352,27 @@ class AIService:
 
     # ── API calls ───────────────────────────────────────────
 
-    async def _call_api_with_retry(self, system_prompt: str, user_prompt: str) -> str:
+    async def _call_api_with_retry(self, user_prompt: str, agent: str = "quiz-generator") -> str:
         last_exception = None
         for attempt in range(self.max_retries + 1):
             try:
-                return await self._call_api(system_prompt, user_prompt)
-            except httpx.HTTPStatusError as e:
+                return await self._call_api(user_prompt, agent)
+            except AIServiceError as e:
                 last_exception = e
-                if e.response.status_code == 429 and attempt < self.max_retries:
-                    retry_after = e.response.headers.get("Retry-After")
-                    delay = float(retry_after) if retry_after else self.base_delay * (2 ** attempt)
-                    logger.warning("Rate limited (429), retrying in %ss (%d/%d)",
-                                   delay, attempt + 1, self.max_retries)
+                # Retry on transient CLI failures (502) and timeouts (504)
+                if e.status_code in (502, 504) and attempt < self.max_retries:
+                    delay = self.base_delay * (2 ** attempt)
+                    logger.warning("CLI error (HTTP %d: %s), retrying in %ss (%d/%d)",
+                                   e.status_code, e, delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
                 raise
-            except (httpx.TimeoutException, httpx.NetworkError) as e:
+            except asyncio.TimeoutError as e:
                 last_exception = e
                 if attempt < self.max_retries:
                     delay = self.base_delay * (2 ** attempt)
-                    logger.warning("Transient error (%s: %s), retrying in %ss (%d/%d)",
-                                   type(e).__name__, e, delay, attempt + 1, self.max_retries)
+                    logger.warning("Timeout (retrying in %ss %d/%d)",
+                                   delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -464,47 +380,172 @@ class AIService:
             raise last_exception
         raise AIServiceError("AI service failed after retries", category="EXTERNAL", status_code=502)
 
-    async def _call_api(self, system_prompt: str, user_prompt: str) -> str:
-        # OpenCode API requires client-identification headers — without them, 400.
-        session_id = "ses_" + secrets.token_hex(12)
-        request_id = "req_" + secrets.token_hex(12)
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-            "x-opencode-client": "opencode",
-            "x-opencode-session": session_id,
-            "x-opencode-request": request_id,
-            "User-Agent": "opencode/1.18.15",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.7,
-        }
+    async def _call_api(self, user_prompt: str, agent: str = "quiz-generator") -> str:
+        """Call the opencode CLI with specified agent."""
+        import os
+        import subprocess
+
+        # Build environment with optional proxy
+        env = os.environ.copy()
+        env["OPENCODE_CONFIG"] = "/home/allen/Proyectos/BotDeEncuestas/agent/opencode.json"
 
         from bot.config import active_proxy_url
-        async with httpx.AsyncClient(timeout=self.timeout, proxy=active_proxy_url) as client:
-            resp = await client.post(self.api_url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        if active_proxy_url:
+            env["HTTP_PROXY"] = active_proxy_url
+            env["HTTPS_PROXY"] = active_proxy_url
 
-            if "choices" not in data or not data["choices"]:
-                raise ValueError("Invalid response: missing 'choices'")
-            content = data["choices"][0].get("message", {}).get("content", "")
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("Invalid response: empty content")
-            return content.strip()
+        # Use specified agent, pass only user message
+        cmd = ["opencode", "run", user_prompt, "--agent", agent, "--format", "json"]
 
-    # ── prompts ─────────────────────────────────────────────
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout
+            )
+        except asyncio.TimeoutError:
+            if proc and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise AIServiceError(
+                "AI service timed out",
+                category="EXTERNAL",
+                status_code=504,
+            )
 
-    def _system_prompt_generate(
-        self, count_es: dict[str, int], count_ru: dict[str, int], level: str,
-        dialect: str, examples: list[str] | None = None,
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            logger.error("opencode CLI failed (exit %d): %s", proc.returncode, stderr)
+            raise AIServiceError(
+                f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        if not stdout:
+            raise AIServiceError(
+                "AI service returned empty response",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        # Parse JSON event stream — look for the final assistant message
+        assistant_content = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if event.get("type") == "message" and event.get("role") == "assistant":
+                assistant_content = event.get("content", "")
+
+        if not assistant_content or not isinstance(assistant_content, str) or not assistant_content.strip():
+            logger.error("No assistant message found in CLI output: %s", stdout[:500])
+            raise AIServiceError(
+                "AI service returned no assistant message",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        return assistant_content.strip()
+
+    async def _call_api_with_fix_prompt(self, original_prompt: str, fix_prompt: str, agent: str = "quiz-generator") -> str:
+        """Call CLI with feedback prompt, continuing the same session."""
+        import os
+        import subprocess
+
+        # Build environment with optional proxy
+        env = os.environ.copy()
+        env["OPENCODE_CONFIG"] = "/home/allen/Proyectos/BotDeEncuestas/agent/opencode.json"
+
+        from bot.config import active_proxy_url
+        if active_proxy_url:
+            env["HTTP_PROXY"] = active_proxy_url
+            env["HTTPS_PROXY"] = active_proxy_url
+
+        # Use specified agent with --continue flag for session continuity
+        cmd = ["opencode", "run", fix_prompt, "--agent", agent, "--format", "json", "--continue"]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout
+            )
+        except asyncio.TimeoutError:
+            if proc and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise AIServiceError(
+                "AI service timed out",
+                category="EXTERNAL",
+                status_code=504,
+            )
+
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            logger.error("opencode CLI failed (exit %d): %s", proc.returncode, stderr)
+            raise AIServiceError(
+                f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        if not stdout:
+            raise AIServiceError(
+                "AI service returned empty response",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        # Parse JSON event stream — look for the final assistant message
+        assistant_content = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if event.get("type") == "message" and event.get("role") == "assistant":
+                assistant_content = event.get("content", "")
+
+        if not assistant_content or not isinstance(assistant_content, str) or not assistant_content.strip():
+            logger.error("No assistant message found in CLI output: %s", stdout[:500])
+            raise AIServiceError(
+                "AI service returned no assistant message",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        return assistant_content.strip()
+
+    # ── user prompt builders ─────────────────────────────────
+
+    def _build_generate_user_prompt(
+        self, topic: str, count_es: dict[str, int], count_ru: dict[str, int],
+        level: str, dialect: str, examples: list[str] | None = None,
         forwarded_posts: list[str] | None = None,
     ) -> str:
+        """Build user prompt with specific task parameters for quiz generation."""
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
         total = total_es + total_ru
@@ -553,73 +594,51 @@ class AIService:
             )
 
         return (
-            "Eres un experto en crear quizzes de español para estudiantes rusohablantes.\n\n"
-            f"Categorías de quiz:\n"
-            "  - fill_blank: Cumplimentar espacios en blanco (completar la palabra correcta)\n"
-            "  - meaning: Dar respuesta al significado de una expresión\n"
-            "  - synonyms: Opción de sinónimos / antónimos\n"
-            "  - slang: Opción de EDUCADO / Slang\n\n"
+            f"Crea quizzes sobre: {topic}\n\n"
             f"Debes generar EXACTAMENTE {total} quizzes:\n\n"
             f"En ESPAÑOL ({total_es}):\n{es_list}\n\n"
             f"En RUSO ({total_ru}):\n{ru_list}\n\n"
             f"Nivel: {level}\n"
             f"Dialecto: {dialect}\n"
             f"{examples_section}"
-            f"{multi_post_addition}\n"
-            "REGLAS:\n"
-            "- Responde SOLO con un JSON válido, sin texto adicional\n"
-            "- El JSON tiene esta forma exacta:\n"
-            '  {"espanol":[...],"ruso":[...]}\n'
-            "- Cada quiz dentro de los arrays tiene esta forma:\n"
-            '  {"id":1,"category":"fill_blank","question":"...","options":["A","B","C","D"],"correct":0,"ru_title":"..."}\n'
-            "- 'id' = número secuencial empezando en 1 DENTRO de cada array\n"
-            "- 'category' = clave de categoría: fill_blank, meaning, synonyms, slang\n"
-            "- 'question' = la pregunta clara y concisa\n"
-            "- 'options' = entre 3 y 4 opciones de respuesta\n"
-            "- 'correct' = índice (0-based) de la respuesta correcta\n"
-            "- 'ru_title' = traducción al ruso del título/pregunta (SOLO para quizzes en español):\n"
-            f"  - Nivel {level}: OBLIGATORIO si el nivel es A1 o A2, opcional (si ayuda a la comprensión) si es B1\n"
-            "  - NO incluir en quizzes de 'ruso'\n"
-            "  - Solo traduce la pregunta, NO las opciones de respuesta\n"
-            "- Las preguntas en español deben ser 100% en español\n"
-            "- Las preguntas en ruso deben ser 100% en ruso\n"
-            "- Las opciones de respuesta pueden estar en el idioma que corresponda\n"
-            f"- Las preguntas deben ser apropiadas para nivel {level}\n"
-            f"- Dialecto {dialect}: usa sus particularidades de gramática y vocabulario, "
-            "PERO el quiz se centra en el TEMA, no en el dialecto\n"
-            "- DIFICULTAD CRECIENTE dentro de cada idioma\n"
-            f"- DEBES generar exactamente las cantidades especificadas por categoría\n\n"
-            "REGLA FUNDAMENTAL — INDEPENDENCIA TOTAL ENTRE IDIOMAS:\n"
-            "Los quizzes en español y en ruso son DOS MUNDOS COMPLETAMENTE SEPARADOS.\n"
-            "NO son traducciones el uno del otro. NO comparten ejemplos, microtemas,\n"
-            "ni contenido. Si la oración X se usó en un quiz en español, NO puede\n"
-            "aparecer en ningún quiz en ruso, y viceversa.\n"
-            "Cada idioma tiene su propia pool de ejemplos, su propio ángulo,\n"
-            "sus propias oraciones de ejemplo. Piensa en ellos como dos reinos\n"
-            "distintos de un mismo tema — comparten la frontera, no los ciudadanos.\n"
-            "El 60% de oraciones originales se divide: unas para español, otras para ruso.\n"
-            "Nunca las dupliques entre idiomas."
+            f"{multi_post_addition}"
         )
 
-    def _system_prompt_edit(self) -> str:
+    def _build_topic_user_prompt(self, text: str, is_multi_post: bool, multi_post_context: str) -> str:
+        """Build user prompt for topic determination."""
         return (
-            "Eres un experto en crear quizzes de español para estudiantes.\n"
-            "Recibes el historial de quizzes y un feedback para EDITAR uno solo.\n\n"
-            "REGLAS:\n"
-            "- Responde SOLO con JSON válido de UN SOLO quiz, sin texto adicional\n"
-            "- El JSON tiene esta forma:\n"
-            '  {"id":1,"question":"...","options":["A","B","C","D"],"correct":0}\n'
-            "- 'id' = el mismo id del quiz que estás editando\n"
-            "- SOLO devuelve el quiz editado, NO los demás\n"
-            "- Mantén el idioma del quiz (español o ruso)\n"
-            "- Mantén la coherencia con los otros quizzes del historial\n"
-            "- Aplica el feedback del usuario\n"
-            "- Todo en el idioma original del quiz"
+            f"{text}"
+            f"{multi_post_context}"
         )
 
-    def _edit_user_prompt(
+    def _build_category_counts_user_prompt(
+        self, topic: str, examples: list[str],
+        count_es: dict[str, int], count_ru: dict[str, int],
+        level: str, dialect: str,
+    ) -> str:
+        """Build user prompt for category count determination."""
+        examples_text = "\n".join(f"  - {e}" for e in examples[:20]) if examples else "(sin ejemplos)"
+        return (
+            f"Tema: {topic}\n"
+            f"Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Oraciones de ejemplo:\n{examples_text}\n\n"
+            f"Cantidades actuales:\n"
+            f"  Español: {count_es}\n"
+            f"  Ruso: {count_ru}\n\n"
+            "Sugerencias las cantidades óptimas de quizzes por categoría e idioma."
+        )
+
+    def _build_review_user_prompt(self, quizzes_data: list[dict], topic: str, level: str, dialect: str) -> str:
+        """Build user prompt for quiz review."""
+        return (
+            f"Tema: {topic} | Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Quizzes a revisar:\n{json.dumps(quizzes_data, ensure_ascii=False, indent=2)}"
+        )
+
+    def _build_edit_user_prompt(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> str:
+        """Build user prompt for quiz editing."""
         history_text = json.dumps(history, ensure_ascii=False, indent=2)
         return (
             f"Tema: {topic}\n\n"

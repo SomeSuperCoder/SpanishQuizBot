@@ -1,0 +1,44 @@
+{
+  "headers": {
+    "timestamp": "2026-09-17T21:26:46Z",
+    "agent_id": "scout"
+  },
+  "data": {
+    "shared": {
+      "key_facts": [
+        "opencode is a Go-based CLI/TUI application for AI coding assistance (v1.18.31 installed)",
+        "CLI binary at /home/allen/.opencode/bin/opencode",
+        "Config format: opencode.json or opencode.jsonc (JSON with Comments)",
+        "Two config locations: global (~/.config/opencode/) and per-project (.opencode/ or project root)",
+        "Config precedence: global < project files < .opencode files (merged, not replaced)",
+        "Custom agents defined via Markdown files in ~/.config/opencode/agents/ or .opencode/agents/",
+        "Agent types: primary (user-facing, Tab to switch) and subagents (invoked via @mention or task)",
+        "Built-in primary agents: Build, Plan; Built-in subagents: General, Explore, Scout",
+        "JSON output via --format json flag on opencode run command",
+        "Environment variables control many behaviors (OPENCODE_CONFIG, OPENCODE_CONFIG_DIR, etc.)"
+      ],
+      "call_chains": [
+        "opencode run [message] --format json -> returns raw JSON events",
+        "opencode -> starts TUI interface",
+        "opencode agent list -> shows all available agents",
+        "opencode debug config -> shows resolved configuration",
+        "opencode debug paths -> shows all state directories"
+      ],
+      "blast_radius": [
+        "~/.config/opencode/ (global config, agents, themes)",
+        ".opencode/ (project-local config and agents)",
+        "opencode.json (runtime configuration)",
+        "tui.json (TUI-specific settings)"
+      ],
+      "research_sources": [
+        "https://opencode.ai/docs/cli",
+        "https://opencode.ai/docs/config",
+        "https://opencode.ai/docs/agents",
+        "https://github.com/anomalyco/opencode (official repo)",
+        "Context7 library: /anomalyco/opencode"
+      ]
+    },
+    "for_supervisor": "VERIFIED: Complete opencode CLI research. Key findings: (1) CLI has run command with --format json for JSON output, (2) Config files merge from global to project with precedence, (3) Custom agents via Markdown files with frontmatter or JSON in opencode.json, (4) 30+ environment variables control behavior, (5) Agent management via opencode agent create/list commands. All info verified from official docs and local installation.",
+    "for_successor": "Use this to understand opencode CLI capabilities for any implementation task. Key integration points: --format json for programmatic output, config file locations for setup, agent system for customization."
+  }
+}
