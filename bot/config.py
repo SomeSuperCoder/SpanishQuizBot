@@ -1,6 +1,9 @@
 from pydantic_settings import BaseSettings
 from typing import List
 
+# Model is configured in agent/opencode.json — that is the single source of truth.
+# The CLI reads it from there; our Python code does not reference it directly.
+
 class Settings(BaseSettings):
     bot_token: str
     whitelist_usernames: List[str] = []

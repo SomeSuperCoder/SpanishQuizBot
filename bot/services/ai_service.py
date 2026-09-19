@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import signal
+import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -58,10 +61,8 @@ class AIServiceError(Exception):
 
 class AIService:
     def __init__(self):
-        self.api_url = "https://opencode.ai/zen/v1/chat/completions"
-        self.model = "nemotron-3.5-lightning-free"
-        self.timeout = 600.0  # 10 minutes — LLM inference can be slow
-        self.max_retries = 3
+        self.timeout = 300.0  # 5 minutes — covers generate + review + fix stages
+        self.max_retries = 2
         self.base_delay = 1.0
 
     # ── public ──────────────────────────────────────────────
@@ -80,6 +81,9 @@ class AIService:
         """
         total_es = sum(count_es.values())
         total_ru = sum(count_ru.values())
+
+        logger.info("Generating %d quizzes — topic='%s', level=%s, dialect=%s",
+                     total_es + total_ru, topic, level, dialect)
 
         user = self._build_generate_user_prompt(topic, count_es, count_ru, level, dialect, examples, forwarded_posts)
 
@@ -126,6 +130,7 @@ class AIService:
         for i, q in enumerate(all_quizzes):
             q.id = i + 1
 
+        logger.info("Generated %d quizzes (%d es + %d ru)", len(all_quizzes), len(espanol_quizzes), len(ruso_quizzes))
         return all_quizzes
 
     async def determine_topic(self, text: str, is_multi_post: bool = False) -> AutoDetected:
@@ -237,6 +242,7 @@ class AIService:
         Returns a list of issues: [{"id": 3, "issue": "...", "fix": {...}}, ...]
         Empty list = no issues found.
         """
+        logger.info("Reviewing %d quizzes for issues", len(quizzes))
         quizzes_data = [q.to_dict() for q in quizzes]
         user = self._build_review_user_prompt(quizzes_data, topic, level, dialect)
 
@@ -244,28 +250,39 @@ class AIService:
 
         # Parse JSON
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
+        issues: list[dict] = []
         try:
             data = json.loads(cleaned)
-            return data.get("issues", [])
+            issues = data.get("issues", [])
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             pass
 
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group())
-                return data.get("issues", [])
-            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-                pass
+        if not issues:
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                    issues = data.get("issues", [])
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                    pass
 
-        # If we can't parse the review, return empty (no issues) — don't block publishing
-        logger.warning("AI review returned unparseable response, skipping review")
-        return []
+        if not issues:
+            # If we can't parse the review, return empty (no issues) — don't block publishing
+            if not issues and not data:
+                logger.warning("AI review returned unparseable response, skipping review")
+            else:
+                logger.info("Review found 0 issues")
+            return []
+
+        logger.info("Review found %d issue(s): %s", len(issues),
+                     ", ".join(f"#{i.get('id')}: {i.get('issue', '?')}" for i in issues))
+        return issues
 
     async def edit_quiz(
         self, topic: str, history: list[dict], quiz_id: int, feedback: str
     ) -> Quiz:
         """Edit a single quiz (PATCH style). Returns only the modified quiz."""
+        logger.info("Fixing quiz #%d — %s", quiz_id, feedback[:80])
         user = self._build_edit_user_prompt(topic, history, quiz_id, feedback)
 
         raw = await self._call_api_with_retry(user)
@@ -356,13 +373,15 @@ class AIService:
         last_exception = None
         for attempt in range(self.max_retries + 1):
             try:
+                if attempt > 0:
+                    logger.info("[opencode] Retry attempt %d/%d — agent=%s", attempt, self.max_retries, agent)
                 return await self._call_api(user_prompt, agent)
             except AIServiceError as e:
                 last_exception = e
                 # Retry on transient CLI failures (502) and timeouts (504)
                 if e.status_code in (502, 504) and attempt < self.max_retries:
                     delay = self.base_delay * (2 ** attempt)
-                    logger.warning("CLI error (HTTP %d: %s), retrying in %ss (%d/%d)",
+                    logger.warning("[opencode] CLI error (HTTP %d: %s), retrying in %ss (%d/%d)",
                                    e.status_code, e, delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
@@ -371,7 +390,7 @@ class AIService:
                 last_exception = e
                 if attempt < self.max_retries:
                     delay = self.base_delay * (2 ** attempt)
-                    logger.warning("Timeout (retrying in %ss %d/%d)",
+                    logger.warning("[opencode] Timeout (retrying in %ss %d/%d)",
                                    delay, attempt + 1, self.max_retries)
                     await asyncio.sleep(delay)
                     continue
@@ -381,8 +400,7 @@ class AIService:
         raise AIServiceError("AI service failed after retries", category="EXTERNAL", status_code=502)
 
     async def _call_api(self, user_prompt: str, agent: str = "quiz-generator") -> str:
-        """Call the opencode CLI with specified agent."""
-        import os
+        """Call the opencode CLI, embedding agent instructions in the prompt."""
         import subprocess
 
         # Build environment with optional proxy
@@ -394,22 +412,32 @@ class AIService:
             env["HTTP_PROXY"] = active_proxy_url
             env["HTTPS_PROXY"] = active_proxy_url
 
-        # Use specified agent, pass only user message
-        cmd = ["opencode", "run", user_prompt, "--agent", agent, "--format", "json"]
+        # Embed agent instructions directly — remote API doesn't support --agent flag
+        instructions = self._load_agent_instructions(agent)
+        full_prompt = f"{instructions}\n\n---\n\n{user_prompt}" if instructions else user_prompt
+        cmd = ["opencode", "run", full_prompt, "--format", "json"]
 
+        logger.info("[opencode] CLI call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
+        t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout
             )
         except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.error("[opencode] CLI timed out after %.1fs", elapsed)
             if proc and proc.returncode is None:
-                proc.kill()
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
                 await proc.wait()
             raise AIServiceError(
                 "AI service timed out",
@@ -420,8 +448,10 @@ class AIService:
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
 
+        elapsed = time.monotonic() - t0
+
         if proc.returncode != 0:
-            logger.error("opencode CLI failed (exit %d): %s", proc.returncode, stderr)
+            logger.error("[opencode] CLI failed (exit %d) after %.1fs: %s", proc.returncode, elapsed, stderr[:200])
             raise AIServiceError(
                 f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
                 category="EXTERNAL",
@@ -435,21 +465,10 @@ class AIService:
                 status_code=502,
             )
 
-        # Parse JSON event stream — look for the final assistant message
-        assistant_content = None
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        # Parse JSON event stream — look for the final text event
+        assistant_content = self._extract_text_from_events(stdout)
 
-            if event.get("type") == "message" and event.get("role") == "assistant":
-                assistant_content = event.get("content", "")
-
-        if not assistant_content or not isinstance(assistant_content, str) or not assistant_content.strip():
+        if not assistant_content:
             logger.error("No assistant message found in CLI output: %s", stdout[:500])
             raise AIServiceError(
                 "AI service returned no assistant message",
@@ -457,11 +476,11 @@ class AIService:
                 status_code=502,
             )
 
-        return assistant_content.strip()
+        logger.info("[opencode] CLI call completed — %d chars, %.1fs", len(assistant_content), elapsed)
+        return assistant_content
 
     async def _call_api_with_fix_prompt(self, original_prompt: str, fix_prompt: str, agent: str = "quiz-generator") -> str:
         """Call CLI with feedback prompt, continuing the same session."""
-        import os
         import subprocess
 
         # Build environment with optional proxy
@@ -473,22 +492,32 @@ class AIService:
             env["HTTP_PROXY"] = active_proxy_url
             env["HTTPS_PROXY"] = active_proxy_url
 
-        # Use specified agent with --continue flag for session continuity
-        cmd = ["opencode", "run", fix_prompt, "--agent", agent, "--format", "json", "--continue"]
+        # Embed agent instructions directly — remote API doesn't support --agent flag
+        instructions = self._load_agent_instructions(agent)
+        full_prompt = f"{instructions}\n\n---\n\n{fix_prompt}" if instructions else fix_prompt
+        cmd = ["opencode", "run", full_prompt, "--format", "json", "--continue"]
 
+        logger.info("[opencode] Fix call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
+        t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout
             )
         except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.error("[opencode] Fix call timed out after %.1fs", elapsed)
             if proc and proc.returncode is None:
-                proc.kill()
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
                 await proc.wait()
             raise AIServiceError(
                 "AI service timed out",
@@ -499,8 +528,10 @@ class AIService:
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
 
+        elapsed = time.monotonic() - t0
+
         if proc.returncode != 0:
-            logger.error("opencode CLI failed (exit %d): %s", proc.returncode, stderr)
+            logger.error("[opencode] Fix call failed (exit %d) after %.1fs: %s", proc.returncode, elapsed, stderr[:200])
             raise AIServiceError(
                 f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
                 category="EXTERNAL",
@@ -514,8 +545,50 @@ class AIService:
                 status_code=502,
             )
 
-        # Parse JSON event stream — look for the final assistant message
-        assistant_content = None
+        # Parse JSON event stream — look for the final text event
+        assistant_content = self._extract_text_from_events(stdout)
+
+        if not assistant_content:
+            logger.error("No assistant message found in CLI output: %s", stdout[:500])
+            raise AIServiceError(
+                "AI service returned no assistant message",
+                category="EXTERNAL",
+                status_code=502,
+            )
+
+        logger.info("[opencode] Fix call completed — %d chars, %.1fs", len(assistant_content), elapsed)
+        return assistant_content
+
+    # ── agent instruction loading ─────────────────────────────
+
+    @staticmethod
+    def _load_agent_instructions(agent: str) -> str:
+        """Load markdown body from .opencode/agents/{agent}.md, stripping YAML frontmatter."""
+        import pathlib
+        md_path = pathlib.Path(__file__).resolve().parent.parent.parent / ".opencode" / "agents" / f"{agent}.md"
+        try:
+            raw = md_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logger.warning("Agent instruction file not found: %s", md_path)
+            return ""
+        # Strip YAML frontmatter (lines between --- delimiters)
+        if raw.startswith("---"):
+            end = raw.find("---", 3)
+            if end != -1:
+                raw = raw[end + 3:]
+        return raw.strip()
+
+    # ── event stream parsing ────────────────────────────────
+
+    @staticmethod
+    def _extract_text_from_events(stdout: str) -> str | None:
+        """Extract assistant text from opencode JSONL event stream.
+
+        opencode run --format json emits events like:
+            {"type":"text","part":{"type":"text","text":"hello"}}
+        Returns the concatenated text from all text events, or None.
+        """
+        parts: list[str] = []
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
@@ -525,18 +598,13 @@ class AIService:
             except json.JSONDecodeError:
                 continue
 
-            if event.get("type") == "message" and event.get("role") == "assistant":
-                assistant_content = event.get("content", "")
+            if event.get("type") == "text":
+                part = event.get("part", {})
+                text = part.get("text", "")
+                if text and isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
 
-        if not assistant_content or not isinstance(assistant_content, str) or not assistant_content.strip():
-            logger.error("No assistant message found in CLI output: %s", stdout[:500])
-            raise AIServiceError(
-                "AI service returned no assistant message",
-                category="EXTERNAL",
-                status_code=502,
-            )
-
-        return assistant_content.strip()
+        return "\n".join(parts) if parts else None
 
     # ── user prompt builders ─────────────────────────────────
 
@@ -607,7 +675,17 @@ class AIService:
     def _build_topic_user_prompt(self, text: str, is_multi_post: bool, multi_post_context: str) -> str:
         """Build user prompt for topic determination."""
         return (
-            f"{text}"
+            "Analiza el siguiente texto y determina si contiene material para aprender español.\n"
+            "El texto fue reenviado por un estudiante de español.\n\n"
+            "Si el texto contiene vocabulario, gramática, expresiones o contenido en español "
+            "(aunque sea parcialmente), devuelve un tema real. SOLO devuelve NO_TOPIC si el "
+            "texto NO contiene NADA relacionado con español.\n\n"
+            "Responde SOLO con JSON válido (sin markdown, sin texto adicional):\n"
+            '{"topic": "tema detectado", "examples": ["oración 1", "oración 2"], '
+            '"level": "A1", "dialect": "Castellano"}\n\n'
+            "Niveles válidos: A1, A2, B1, B2, C1, C2\n"
+            "Dialectos válidos: Castellano, Mexicano, Argentino\n\n"
+            f"TEXTO:\n{text}"
             f"{multi_post_context}"
         )
 
@@ -619,13 +697,19 @@ class AIService:
         """Build user prompt for category count determination."""
         examples_text = "\n".join(f"  - {e}" for e in examples[:20]) if examples else "(sin ejemplos)"
         return (
+            "Analiza el tema y sugiere cuántos quizzes crear por categoría e idioma.\n\n"
+            "Responde SOLO con JSON válido (sin markdown, sin texto adicional):\n"
+            '{"espanol": {"fill_blank": 2, "meaning": 1, "synonyms": 1, "slang": 0}, '
+            '"ruso": {"fill_blank": 1, "meaning": 2, "synonyms": 0, "slang": 1}}\n\n'
+            "Categorías válidas: fill_blank, meaning, synonyms, slang\n"
+            "Cada categoría debe tener un valor >= 0.\n"
+            "El total de quizzes (espanol + ruso) debe ser entre 4 y 8.\n\n"
             f"Tema: {topic}\n"
             f"Nivel: {level} | Dialecto: {dialect}\n\n"
             f"Oraciones de ejemplo:\n{examples_text}\n\n"
             f"Cantidades actuales:\n"
             f"  Español: {count_es}\n"
-            f"  Ruso: {count_ru}\n\n"
-            "Sugerencias las cantidades óptimas de quizzes por categoría e idioma."
+            f"  Ruso: {count_ru}"
         )
 
     def _build_review_user_prompt(self, quizzes_data: list[dict], topic: str, level: str, dialect: str) -> str:

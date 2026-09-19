@@ -9,3 +9,6 @@ build/
 .pytest_cache/
 data/
 OPENCODE_API.md
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json

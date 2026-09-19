@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/nemotron-3.5-lightning-free",
+  "model": "opencode/mimo-v2.5-free",
   "provider": {
     "opencode": {
       "options": {
@@ -13,19 +13,17 @@
     "quiz-generator": {
       "description": "Genera quizzes de español para estudiantes rusohablantes",
       "mode": "primary",
-      "model": "opencode/nemotron-3.5-lightning-free",
       "permission": {
-        "edit": "allow",
-        "bash": "ask"
+        "edit": "deny",
+        "bash": "deny"
       }
     },
     "quiz-reviewer": {
       "description": "Revisa y corrige quizzes de español para estudiantes rusohablantes",
       "mode": "primary",
-      "model": "opencode/nemotron-3.5-lightning-free",
       "permission": {
-        "edit": "allow",
-        "bash": "ask"
+        "edit": "deny",
+        "bash": "deny"
       }
     }
   },
@@ -36,5 +34,5 @@
     "max_lines": 200,
     "max_bytes": 8192
   },
-  "instructions": ["AGENTS.md"]
+  "instructions": []
 }
