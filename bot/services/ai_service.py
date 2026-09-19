@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+from bot.models.dialects import Dialect
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ class AutoDetected:
     topic: str
     examples: list[str]
     level: str  # A1-C2
-    dialect: str  # Castellano, Mexicano, Argentino
+    dialect: str  # Castellano, Mexicano, Caribeño, Rioplatense, Chileno
 
 
 class AIServiceError(Exception):
@@ -170,14 +172,11 @@ class AIService:
         topic = str(data.get("topic", "NO_TOPIC")).strip()
         examples = [str(e).strip() for e in data.get("examples", []) if isinstance(e, str)]
         level = str(data.get("level", "A1")).strip().upper()
-        dialect = str(data.get("dialect", "Castellano")).strip().capitalize()
+        dialect = Dialect.from_name(str(data.get("dialect", "Castellano"))).display_name
 
         # Validate level
         if level not in ("A1", "A2", "B1", "B2", "C1", "C2"):
             level = "A1"
-        # Validate dialect
-        if dialect not in ("Castellano", "Mexicano", "Argentino"):
-            dialect = "Castellano"
 
         return AutoDetected(topic=topic, examples=examples, level=level, dialect=dialect)
 
@@ -667,13 +666,15 @@ class AIService:
             f"En ESPAÑOL ({total_es}):\n{es_list}\n\n"
             f"En RUSO ({total_ru}):\n{ru_list}\n\n"
             f"Nivel: {level}\n"
-            f"Dialecto: {dialect}\n"
+            f"Dialecto: {Dialect.from_name(dialect).prompt_text()}\n"
             f"{examples_section}"
             f"{multi_post_addition}"
         )
 
     def _build_topic_user_prompt(self, text: str, is_multi_post: bool, multi_post_context: str) -> str:
         """Build user prompt for topic determination."""
+        dialect_names = ", ".join(Dialect.valid_names())
+        dialect_details = "\n".join(f"  - {d.display_name}: {d.description[:80]}..." for d in Dialect)
         return (
             "Analiza el siguiente texto y determina si contiene material para aprender español.\n"
             "El texto fue reenviado por un estudiante de español.\n\n"
@@ -684,7 +685,8 @@ class AIService:
             '{"topic": "tema detectado", "examples": ["oración 1", "oración 2"], '
             '"level": "A1", "dialect": "Castellano"}\n\n'
             "Niveles válidos: A1, A2, B1, B2, C1, C2\n"
-            "Dialectos válidos: Castellano, Mexicano, Argentino\n\n"
+            f"Dialectos válidos: {dialect_names}\n\n"
+            f"Descripción de dialectos:\n{dialect_details}\n\n"
             f"TEXTO:\n{text}"
             f"{multi_post_context}"
         )
@@ -705,7 +707,8 @@ class AIService:
             "Cada categoría debe tener un valor >= 0.\n"
             "El total de quizzes (espanol + ruso) debe ser entre 4 y 8.\n\n"
             f"Tema: {topic}\n"
-            f"Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Nivel: {level}\n"
+            f"Dialecto: {Dialect.from_name(dialect).prompt_text()}\n\n"
             f"Oraciones de ejemplo:\n{examples_text}\n\n"
             f"Cantidades actuales:\n"
             f"  Español: {count_es}\n"
@@ -715,7 +718,8 @@ class AIService:
     def _build_review_user_prompt(self, quizzes_data: list[dict], topic: str, level: str, dialect: str) -> str:
         """Build user prompt for quiz review."""
         return (
-            f"Tema: {topic} | Nivel: {level} | Dialecto: {dialect}\n\n"
+            f"Tema: {topic} | Nivel: {level} | Dialecto: {Dialect.from_name(dialect).display_name}\n"
+            f"Descripción del dialecto: {Dialect.from_name(dialect).description}\n\n"
             f"Quizzes a revisar:\n{json.dumps(quizzes_data, ensure_ascii=False, indent=2)}"
         )
 

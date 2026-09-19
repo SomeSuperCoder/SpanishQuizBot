@@ -51,7 +51,7 @@ Generar quizzes estructurados en formato JSON que incluyan:
 1. **Independencia total entre idiomas**: Los quizzes en español y ruso son mundos separados
 2. **60% de oraciones originales**: El 60% de los quizzes debe venir de las oraciones proporcionadas
 3. **Nivel CEFR**: Adaptar la dificultad al nivel especificado (A1-C2)
-4. **Dialecto**: Respetar las particularidades del dialecto (Castellano, Mexicano, Argentino)
+4. **Dialecto**: Respetar las particularidades del dialecto según la descripción detallada proporcionada en el prompt (vocabulario, expresiones, gramática, pronunciación)
 5. **Dificultad creciente**: Incrementar dificultad dentro de cada idioma
 6. **JSON válido**: Responder SOLO con JSON válido, sin texto adicional
 

@@ -31,7 +31,7 @@ Designed for **Russian-speaking students** learning Spanish, with full support f
 | 🌐 | **Multi-Language Quizzes** | Spanish AND Russian question content — independent per language |
 | 🔍 | **Smart Auto-Detection** | Forward a channel post → AI extracts topic, CEFR level, and dialect |
 | 📝 | **4 Quiz Categories** | Fill blank · Meaning · Synonyms/Antonyms · Slang/Educado |
-| 🗣️ | **Dialect Support** | Castellano 🇪🇸 · Mexicano 🇲🇽 · Argentino 🇦🇷 |
+| 🗣️ | **Dialect Support** | Castellano 🇪🇸 · Mexicano 🇲🇽 · Caribeño 🇨🇺🇵🇷🇩🇴 · Rioplatense 🇦🇷🇺🇾 · Chileno 🇨🇱 |
 | ✅ | **Auto-Review** | AI self-reviews quizzes for correctness, no duplicates, proper categories |
 | 📢 | **Channel Publishing** | Publish quizzes directly to any connected Telegram channel |
 | ⏱️ | **Scheduled Publishing** | Gradual publication with configurable intervals between quizzes |

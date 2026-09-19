@@ -17,6 +17,7 @@ from aiogram.types import (
 )
 
 from bot.database.repository import UserRepository, SurveyRepository, BotConfigRepository
+from bot.models.dialects import Dialect
 from bot.keyboards.inline import (
     get_start_keyboard,
     get_topic_mode_keyboard,
@@ -645,7 +646,7 @@ async def handle_category_mode(callback_query: CallbackQuery, state: FSMContext)
             count_es=_get_counts(data, "es"),
             count_ru=_get_counts(data, "ru"),
             level=data.get("level", "A1"),
-            dialect=data.get("dialect", "Castellano"),
+            dialect=data.get("dialect", Dialect.CASTELLANO.display_name),
         )
     except Exception:
         logger.exception("Failed to auto-determine category counts")
@@ -948,7 +949,7 @@ async def handle_level(callback_query: CallbackQuery, state: FSMContext):
 @router.callback_query(SurveyCreation.waiting_dialect, F.data.startswith("dialect:"))
 async def handle_dialect(callback_query: CallbackQuery, state: FSMContext):
     """User chose dialect → generate quizzes with AI."""
-    dialect = callback_query.data.split(":")[1]
+    dialect = Dialect.from_slug(callback_query.data.split(":")[1]).display_name
     await state.update_data(dialect=dialect)
 
     data = await state.get_data()
