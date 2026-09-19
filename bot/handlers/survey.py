@@ -1476,7 +1476,28 @@ async def handle_cancel_scheduled(callback_query: CallbackQuery, state: FSMConte
 
 @router.callback_query(F.data == "survey_cancel")
 async def handle_cancel(callback_query: CallbackQuery, state: FSMContext):
-    """Cancel at any stage."""
+    """Cancel at any stage. From review/edit states, go back to review menu."""
+    current_state = await state.get_state()
+
+    if current_state in (
+        SurveyCreation.reviewing,
+        SurveyCreation.waiting_improvement,
+    ):
+        # Restore the review menu instead of clearing everything
+        data = await state.get_data()
+        quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+        level = data["level"]
+
+        await state.set_state(SurveyCreation.reviewing)
+        summary = _build_summary(quizzes, level)
+        await callback_query.message.edit_text(
+            f"👆 {len(quizzes)} quizzes nivel {level}\n\n"
+            f"{summary}\n\n¿Qué quieres hacer?",
+            reply_markup=get_review_keyboard_with_exclude(),
+        )
+        await callback_query.answer()
+        return
+
     await state.clear()
     await callback_query.message.edit_text(
         "❌ Cancelado.\n\n¿Qué quieres hacer?",
