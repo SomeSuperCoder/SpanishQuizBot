@@ -253,8 +253,9 @@ def test_dismiss_thinking_signature_unchanged():
 
 def test_module_compiles():
     """python -m py_compile must pass for the module."""
+    import pathlib
     result = subprocess.run(
         [sys.executable, "-m", "py_compile", "bot/handlers/survey.py"],
-        capture_output=True, text=True, cwd="/home/allen/Proyectos/BotDeEncuestas",
+        capture_output=True, text=True, cwd=str(pathlib.Path(__file__).resolve().parent.parent),
     )
     assert result.returncode == 0, f"Compilation failed:\n{result.stderr}"

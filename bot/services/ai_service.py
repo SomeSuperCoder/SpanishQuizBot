@@ -3,7 +3,8 @@ import json
 import logging
 import os
 import re
-import signal
+import shutil
+import sys
 import time
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -403,8 +404,10 @@ class AIService:
         import subprocess
 
         # Build environment with optional proxy
+        import pathlib
+
         env = os.environ.copy()
-        env["OPENCODE_CONFIG"] = "/home/allen/Proyectos/BotDeEncuestas/agent/opencode.json"
+        env["OPENCODE_CONFIG"] = str(pathlib.Path(__file__).resolve().parent.parent.parent / "agent" / "opencode.json")
 
         from bot.config import active_proxy_url
         if active_proxy_url:
@@ -414,7 +417,8 @@ class AIService:
         # Embed agent instructions directly — remote API doesn't support --agent flag
         instructions = self._load_agent_instructions(agent)
         full_prompt = f"{instructions}\n\n---\n\n{user_prompt}" if instructions else user_prompt
-        cmd = ["opencode", "run", full_prompt, "--format", "json"]
+        opencode_bin = self._resolve_opencode_bin()
+        cmd = [opencode_bin, "run", full_prompt, "--format", "json"]
 
         logger.info("[opencode] CLI call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
         t0 = time.monotonic()
@@ -434,9 +438,9 @@ class AIService:
             logger.error("[opencode] CLI timed out after %.1fs", elapsed)
             if proc and proc.returncode is None:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
                     proc.kill()
+                except OSError:
+                    pass
                 await proc.wait()
             raise AIServiceError(
                 "AI service timed out",
@@ -483,8 +487,10 @@ class AIService:
         import subprocess
 
         # Build environment with optional proxy
+        import pathlib
+
         env = os.environ.copy()
-        env["OPENCODE_CONFIG"] = "/home/allen/Proyectos/BotDeEncuestas/agent/opencode.json"
+        env["OPENCODE_CONFIG"] = str(pathlib.Path(__file__).resolve().parent.parent.parent / "agent" / "opencode.json")
 
         from bot.config import active_proxy_url
         if active_proxy_url:
@@ -494,7 +500,8 @@ class AIService:
         # Embed agent instructions directly — remote API doesn't support --agent flag
         instructions = self._load_agent_instructions(agent)
         full_prompt = f"{instructions}\n\n---\n\n{fix_prompt}" if instructions else fix_prompt
-        cmd = ["opencode", "run", full_prompt, "--format", "json", "--continue"]
+        opencode_bin = self._resolve_opencode_bin()
+        cmd = [opencode_bin, "run", full_prompt, "--format", "json", "--continue"]
 
         logger.info("[opencode] Fix call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
         t0 = time.monotonic()
@@ -514,9 +521,9 @@ class AIService:
             logger.error("[opencode] Fix call timed out after %.1fs", elapsed)
             if proc and proc.returncode is None:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
                     proc.kill()
+                except OSError:
+                    pass
                 await proc.wait()
             raise AIServiceError(
                 "AI service timed out",
@@ -557,6 +564,67 @@ class AIService:
 
         logger.info("[opencode] Fix call completed — %d chars, %.1fs", len(assistant_content), elapsed)
         return assistant_content
+
+    # ── opencode binary resolution ───────────────────────────
+
+    @staticmethod
+    def _resolve_opencode_bin() -> str:
+        """Resolve the opencode executable path.
+
+        On Windows, npm installs a ``.cmd`` shim that re-parses argv through
+        ``cmd.exe``, which mangles shell metacharacters (``|``, ``&``, ``>``…)
+        embedded in the prompt.  To avoid this we locate the real ``.exe``
+        bundled by the ``opencode-ai`` npm package and invoke it directly.
+        On POSIX systems ``shutil.which`` is sufficient.
+        """
+        if sys.platform != "win32":
+            path = shutil.which("opencode")
+            if path:
+                return path
+            raise FileNotFoundError("opencode not found on PATH — install it with 'npm i -g opencode-ai'")
+
+        # Windows: look for the native .exe, skip the broken .cmd shim
+        import pathlib
+
+        def _search_dirs() -> list[pathlib.Path]:
+            dirs: list[pathlib.Path] = []
+            # npm global node_modules (most common)
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                npm_global = pathlib.Path(appdata) / "npm" / "node_modules" / "opencode-ai" / "node_modules"
+                for d in npm_global.glob("opencode-windows-*"):
+                    dirs.append(d / "bin")
+            # scoop
+            user_profile = os.environ.get("USERPROFILE")
+            if user_profile:
+                dirs.append(pathlib.Path(user_profile) / "scoop" / "apps" / "opencode" / "current" / "bin")
+            # chocolatey
+                dirs.append(pathlib.Path(user_profile) / "AppData" / "Local" / "Programs" / "opencode")
+            # opencode.ai installer
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if local_app_data:
+                dirs.append(pathlib.Path(local_app_data) / "Programs" / "opencode")
+            # common npm/pnpm/yarn global paths
+            for env_var in ("NPM_CONFIG_PREFIX", "PNPM_HOME"):
+                val = os.environ.get(env_var)
+                if val:
+                    dirs.append(pathlib.Path(val) / "node_modules" / "opencode-ai" / "node_modules" / "opencode-windows-x64" / "bin")
+            return dirs
+
+        for d in _search_dirs():
+            exe = d / "opencode.exe"
+            if exe.exists():
+                return str(exe)
+
+        # Fallback: shutil.which may still find the .cmd shim
+        path = shutil.which("opencode")
+        if path:
+            return path
+
+        raise FileNotFoundError(
+            "opencode.exe not found — install with 'npm i -g opencode-ai' "
+            "or 'scoop install opencode' or 'choco install opencode'"
+        )
 
     # ── agent instruction loading ─────────────────────────────
 
