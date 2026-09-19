@@ -123,6 +123,47 @@ def get_review_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_review_keyboard_with_exclude() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Editar", callback_data="survey_edit"),
+            InlineKeyboardButton(text="🚀 Publicar todos", callback_data="survey_publish"),
+        ],
+        [
+            InlineKeyboardButton(text="🗑️ Excluir quizzes", callback_data="survey_exclude"),
+            InlineKeyboardButton(text="⏰ Programar", callback_data="survey_schedule"),
+        ],
+    ])
+
+
+def get_exclude_selector_keyboard(excluded_ids: set[int], total: int) -> InlineKeyboardMarkup:
+    """Toggle selector for excluding quizzes. Excluded quizzes show ✅."""
+    buttons = []
+    for i in range(1, total + 1):
+        prefix = "✅" if i in excluded_ids else "  "
+        buttons.append([
+            InlineKeyboardButton(text=f"{prefix} {i}", callback_data=f"exclude_toggle:{i}")
+        ])
+    if excluded_ids:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑️ Excluir {len(excluded_ids)} quiz(es)",
+                callback_data="exclude_confirm",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="↩️ Volver", callback_data="exclude_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_exclude_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Warning screen before executing exclusion."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Editar en su lugar", callback_data="exclude_to_edit")],
+        [InlineKeyboardButton(text="🗑️ Confirmar exclusión", callback_data="exclude_execute")],
+        [InlineKeyboardButton(text="↩️ Volver", callback_data="exclude_back")],
+    ])
+
+
 def get_edit_selector_keyboard(count: int) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text=str(i), callback_data=f"edit_select:{i}")]

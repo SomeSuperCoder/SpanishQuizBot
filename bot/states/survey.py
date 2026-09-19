@@ -13,6 +13,7 @@ class SurveyCreation(StatesGroup):
     waiting_dialect = State()
     generating = State()
     reviewing = State()
+    excluding = State()
     waiting_improvement = State()
     waiting_schedule_interval = State()
     confirming = State()

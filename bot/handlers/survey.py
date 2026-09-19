@@ -27,8 +27,11 @@ from bot.keyboards.inline import (
     get_level_keyboard,
     get_dialect_keyboard,
     get_review_keyboard,
+    get_review_keyboard_with_exclude,
     get_edit_selector_keyboard,
     get_edit_done_keyboard,
+    get_exclude_selector_keyboard,
+    get_exclude_confirm_keyboard,
     get_cancel_keyboard,
     get_post_accumulation_keyboard,
     get_scheduled_keyboard,
@@ -201,6 +204,11 @@ async def _send_quiz_preview(target, quiz: Quiz, level: str, bot) -> None:
         is_anonymous=False,
     )
     await _send_ru_translation(bot, target, msg.message_id, quiz, level)
+
+
+def _md_escape(text: str) -> str:
+    """Escape MarkdownV1 special characters for Telegram."""
+    return text.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("`", "\\`")
 
 
 def _build_summary(quizzes: list[Quiz], level: str) -> str:
@@ -421,7 +429,7 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
         chat_id,
         f"👆 {len(quizzes)} quizzes nivel {level} — {dialect} (del más fácil al más difícil):\n\n"
         f"{summary}{review_note}\n\n¿Qué quieres hacer?",
-        reply_markup=get_review_keyboard(),
+        reply_markup=get_review_keyboard_with_exclude(),
     )
 
 
@@ -1204,6 +1212,178 @@ async def handle_edit_select(callback_query: CallbackQuery, state: FSMContext):
         f"✏️ Describe el cambio para el quiz #{quiz_id}:",
         reply_markup=get_cancel_keyboard(),
     )
+    await callback_query.answer()
+
+
+# ── exclude: select quizzes to remove ───────────────────────
+
+
+def _build_exclude_summary(quizzes: list[Quiz], excluded_ids: set[int], level: str) -> str:
+    """Build exclude selection summary with visual indicators."""
+    lines = []
+    for q in quizzes:
+        marker = "✅" if q.id in excluded_ids else "  "
+        lines.append(f"{marker} [{q.id}] {_md_escape(_prefixed_question(q, level))}")
+    total = len(quizzes)
+    excl_count = len(excluded_ids)
+    remaining = total - excl_count
+    header = f"📋 *Selecciona los quizzes a excluir:*\n\n"
+    body = "\n".join(lines)
+    footer = f"\n\n📊 {excl_count}/{total} seleccionados — {remaining} se publicarán"
+    return header + body + footer
+
+
+@router.callback_query(SurveyCreation.reviewing, F.data == "survey_exclude")
+async def handle_exclude_start(callback_query: CallbackQuery, state: FSMContext):
+    """Enter exclude mode — show quiz selector."""
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    level = data["level"]
+
+    await state.update_data(excluded_ids=[])
+    await state.set_state(SurveyCreation.excluding)
+
+    summary = _build_exclude_summary(quizzes, set(), level)
+    await callback_query.message.edit_text(
+        summary,
+        reply_markup=get_exclude_selector_keyboard(set(), len(quizzes)),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.excluding, F.data.startswith("exclude_toggle:"))
+async def handle_exclude_toggle(callback_query: CallbackQuery, state: FSMContext):
+    """Toggle a quiz in/out of the exclusion set."""
+    quiz_id = int(callback_query.data.split(":")[1])
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    level = data["level"]
+    excluded_ids = set(data.get("excluded_ids", []))
+
+    if quiz_id in excluded_ids:
+        excluded_ids.discard(quiz_id)
+    else:
+        excluded_ids.add(quiz_id)
+
+    await state.update_data(excluded_ids=list(excluded_ids))
+
+    summary = _build_exclude_summary(quizzes, excluded_ids, level)
+    await callback_query.message.edit_text(
+        summary,
+        reply_markup=get_exclude_selector_keyboard(excluded_ids, len(quizzes)),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.excluding, F.data == "exclude_confirm")
+async def handle_exclude_confirm(callback_query: CallbackQuery, state: FSMContext):
+    """Show warning before executing exclusion."""
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    excluded_ids = set(data.get("excluded_ids", []))
+    level = data["level"]
+    excluded_count = len(excluded_ids)
+    remaining = len(quizzes) - excluded_count
+
+    # Build list of excluded quiz questions for the warning
+    excluded_lines = []
+    for q in quizzes:
+        if q.id in excluded_ids:
+            excluded_lines.append(f"  • [{q.id}] {_md_escape(_prefixed_question(q, level))}")
+    excluded_text = "\n".join(excluded_lines)
+
+    warning = (
+        f"⚠️ *Estás a punto de excluir {excluded_count} quiz(es)*\n\n"
+        f"Estos quizzes *no se publicarán*:\n{excluded_text}\n\n"
+        f"Si no te gusta algo específico, puedes *editar* un quiz\n"
+        f"en su lugar para mejorarlo.\n\n"
+        f"Quedarán *{remaining}* quizzes para publicar."
+    )
+
+    await callback_query.message.edit_text(
+        warning,
+        reply_markup=get_exclude_confirm_keyboard(),
+        parse_mode="Markdown",
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.excluding, F.data == "exclude_to_edit")
+async def handle_exclude_to_edit(callback_query: CallbackQuery, state: FSMContext):
+    """User chose to edit instead of exclude — return to review."""
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    level = data["level"]
+
+    await state.set_state(SurveyCreation.reviewing)
+
+    summary = _build_summary(quizzes, level)
+    await callback_query.message.edit_text(
+        f"👆 {len(quizzes)} quizzes nivel {level}\n\n"
+        f"{summary}\n\n¿Qué quieres hacer?",
+        reply_markup=get_review_keyboard_with_exclude(),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.excluding, F.data == "exclude_back")
+async def handle_exclude_back(callback_query: CallbackQuery, state: FSMContext):
+    """Return to review from exclude mode without changes."""
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    level = data["level"]
+
+    await state.set_state(SurveyCreation.reviewing)
+
+    summary = _build_summary(quizzes, level)
+    await callback_query.message.edit_text(
+        f"👆 {len(quizzes)} quizzes nivel {level}\n\n"
+        f"{summary}\n\n¿Qué quieres hacer?",
+        reply_markup=get_review_keyboard_with_exclude(),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.excluding, F.data == "exclude_execute")
+async def handle_exclude_execute(callback_query: CallbackQuery, state: FSMContext):
+    """Execute exclusion — remove selected quizzes and return to review."""
+    data = await state.get_data()
+    quizzes = [Quiz.from_dict(q) for q in data["quizzes"]]
+    excluded_ids = set(data.get("excluded_ids", []))
+    level = data["level"]
+    dialect = data["dialect"]
+    topic = data["topic"]
+
+    # Filter out excluded quizzes
+    remaining = [q for q in quizzes if q.id not in excluded_ids]
+
+    # Re-number remaining quizzes
+    for i, q in enumerate(remaining, 1):
+        q.id = i
+
+    # Update state
+    await state.update_data(quizzes=[q.to_dict() for q in remaining])
+    await state.update_data(excluded_ids=[])
+    await state.set_state(SurveyCreation.reviewing)
+
+    if not remaining:
+        # All quizzes excluded
+        await callback_query.message.edit_text(
+            "⚠️ Se excluyeron todos los quizzes.\n\n"
+            "Genera una nueva tanda o cancela.",
+            reply_markup=get_cancel_keyboard(),
+        )
+    else:
+        summary = _build_summary(remaining, level)
+        await callback_query.message.edit_text(
+            f"✅ {len(excluded_ids)} quiz(es) excluido(s).\n\n"
+            f"👆 {len(remaining)} quizzes nivel {level} — {dialect}:\n\n"
+            f"{summary}\n\n¿Qué quieres hacer?",
+            reply_markup=get_review_keyboard_with_exclude(),
+        )
+
     await callback_query.answer()
 
 
