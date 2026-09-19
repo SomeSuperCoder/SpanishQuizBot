@@ -12,3 +12,6 @@ OPENCODE_API.md
 .opencode/node_modules/
 .opencode/package.json
 .opencode/package-lock.json
+quizzes/
+ser_estar_quizzes.json
+harness/handoffs/
