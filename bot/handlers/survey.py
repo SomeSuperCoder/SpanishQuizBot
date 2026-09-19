@@ -36,6 +36,7 @@ from bot.keyboards.inline import (
     get_cancel_keyboard,
     get_post_accumulation_keyboard,
     get_scheduled_keyboard,
+    get_publish_error_keyboard,
 )
 from bot.states.survey import SurveyCreation
 from bot.services.ai_service import AIService, AIServiceError, Quiz, AutoDetected
@@ -61,6 +62,10 @@ def _ce(custom_id: str, fallback: str) -> RichTextCustomEmoji:
 # Tracks active heartbeat tasks by draft_id so we can cancel old ones
 # when a new thinking stage starts, and clean up on dismiss.
 _heartbeat_tasks: dict[int, asyncio.Task] = {}
+
+# Stores state for scheduled-publish retry (remaining quizzes + metadata).
+# Keyed by retry_id (str). Cleaned up on retry or cancel.
+_scheduled_retry_state: dict[str, dict] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -1021,16 +1026,22 @@ async def handle_publish(callback_query: CallbackQuery, state: FSMContext):
             f"📊 Tema: {topic}",
             reply_markup=get_start_keyboard(),
         )
+        await state.clear()
     except Exception:
         logger.exception("Failed to publish quizzes")
         await callback_query.message.edit_text(
             "❌ Error al publicar.\n\n"
             "Verifica que el bot sea administrador del canal.",
-            reply_markup=get_start_keyboard(),
+            reply_markup=get_publish_error_keyboard(),
         )
 
-    await state.clear()
     await callback_query.answer()
+
+
+@router.callback_query(SurveyCreation.reviewing, F.data == "survey_publish_retry")
+async def handle_publish_retry(callback_query: CallbackQuery, state: FSMContext):
+    """Retry publishing after a failure — re-trigger handle_publish."""
+    await handle_publish(callback_query, state)
 
 
 # ── schedule: ask for interval ──────────────────────────────
@@ -1150,12 +1161,36 @@ async def _run_scheduled_publish(
                 published = i + 1
             except Exception:
                 logger.exception("Failed to publish quiz %d/%d", published + 1, total)
+                # Store remaining quizzes for retry
+                retry_id = f"retry_{task_id}_{int(time.time())}"
+                _scheduled_retry_state[retry_id] = {
+                    "bot": bot,
+                    "channel_id": channel_id,
+                    "channel_title": channel_title,
+                    "quizzes": quizzes[i:],
+                    "level": level,
+                    "dialect": dialect,
+                    "topic": topic,
+                    "interval": interval,
+                    "chat_id": chat_id,
+                    "published": published,
+                    "total": total,
+                }
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                retry_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=f"🔄 Reintentar ({published}/{total} publicados)",
+                        callback_data=f"survey_publish_retry_scheduled:{retry_id}",
+                    )],
+                    [InlineKeyboardButton(text="↩️ Volver", callback_data="back_to_start")],
+                ])
                 try:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"❌ Error al publicar quiz #{quiz.id}. "
                              f"Publicados: {published}/{total}. "
                              "Verifica que el bot sea administrador del canal.",
+                        reply_markup=retry_kb,
                     )
                 except Exception:
                     pass
@@ -1200,6 +1235,53 @@ async def _run_scheduled_publish(
     finally:
         # Always unregister from registry
         await job_registry.unregister(task_id)
+
+
+@router.callback_query(F.data.startswith("survey_publish_retry_scheduled:"))
+async def handle_publish_retry_scheduled(callback_query: CallbackQuery):
+    """Retry a failed scheduled publish from the remaining quizzes."""
+    retry_id = callback_query.data.split(":", 1)[1]
+    state = _scheduled_retry_state.pop(retry_id, None)
+
+    if state is None:
+        await callback_query.answer(
+            text="⚠️ Esta sesión de reintentos ha expirado.",
+            show_alert=True,
+        )
+        await callback_query.message.edit_text(
+            "⚠️ La sesión de reintentos ha expirado.\n\n¿Qué quieres hacer?",
+            reply_markup=get_start_keyboard(),
+        )
+        return
+
+    await callback_query.answer()
+
+    # Show resuming message
+    published = state["published"]
+    total = state["total"]
+    try:
+        await callback_query.message.edit_text(
+            f"🔄 Reanudando publicación ({published}/{total} publicados)..."
+        )
+    except Exception:
+        pass
+
+    # Re-launch background scheduler with remaining quizzes
+    task_id = f"retry_{state['chat_id']}_{int(time.time())}"
+    asyncio.create_task(
+        _run_scheduled_publish(
+            bot=state["bot"],
+            channel_id=state["channel_id"],
+            channel_title=state["channel_title"],
+            quizzes=state["quizzes"],
+            level=state["level"],
+            dialect=state["dialect"],
+            topic=state["topic"],
+            interval=state["interval"],
+            chat_id=state["chat_id"],
+            task_id=task_id,
+        )
+    )
 
 
 @router.callback_query(SurveyCreation.reviewing, F.data.startswith("edit_select:"))

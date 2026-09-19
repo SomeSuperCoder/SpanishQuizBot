@@ -215,3 +215,11 @@ def get_scheduled_keyboard(task_id: str) -> InlineKeyboardMarkup:
             callback_data=f"cancel_scheduled:{task_id}"
         )]
     ])
+
+
+def get_publish_error_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard shown when immediate publish fails — retry or go back."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Reintentar", callback_data="survey_publish_retry")],
+        [InlineKeyboardButton(text="↩️ Volver", callback_data="back_to_start")],
+    ])

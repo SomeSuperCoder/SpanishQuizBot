@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import sys
@@ -32,10 +33,17 @@ class Quiz:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def shuffle_options(self) -> None:
+        """Randomize option order and update correct_index to track the correct answer."""
+        paired = list(zip(self.options, range(len(self.options))))
+        random.shuffle(paired)
+        self.options = [p[0] for p in paired]
+        self.correct_index = next(i for i, (_, orig) in enumerate(paired) if orig == self.correct_index)
+
     @classmethod
     def from_dict(cls, data: dict) -> "Quiz":
         correct = data.get("correct", data.get("correct_index", 0))
-        return cls(
+        quiz = cls(
             id=int(data.get("id", 0)),
             question=str(data["question"]).strip(),
             options=[str(o).strip() for o in data["options"]],
@@ -44,6 +52,8 @@ class Quiz:
             ru_title=str(data.get("ru_title", "") or "").strip(),
             lang=str(data.get("lang", "") or "").strip(),
         )
+        quiz.shuffle_options()
+        return quiz
 
 
 @dataclass
