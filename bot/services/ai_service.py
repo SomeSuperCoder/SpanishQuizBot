@@ -71,12 +71,55 @@ class AIServiceError(Exception):
         self.category = category
         self.status_code = status_code
 
+    def friendly_message(self) -> str:
+        """Return a user-friendly error message for Telegram display."""
+        msg = str(self)
+        if self.status_code == 504:
+            return "⏳ El servicio de IA tardó demasiado en responder. Intenta de nuevo en unos segundos."
+        if self.status_code == 502:
+            # Strip the "AI service CLI error (exit N): " prefix if present
+            inner = msg
+            for prefix in ("AI service CLI error (exit 1): ", "AI service CLI error (exit 2): "):
+                if msg.startswith(prefix):
+                    inner = msg[len(prefix):]
+                    break
+            if "UnknownError" in inner or "Unexpected server error" in inner:
+                return "🔴 El servicio de IA está temporalmente no disponible. Intenta de nuevo en unos minutos."
+            if "AuthenticationError" in inner:
+                return "🔑 Error de autenticación con el servicio de IA. Contacta al administrador."
+            if "RateLimitError" in inner or "rate limit" in inner.lower():
+                return "⏳ Demasiadas solicitudes. Espera un momento y vuelve a intentar."
+            if "AI service returned empty response" in msg:
+                return "📭 El servicio de IA devolvió una respuesta vacía. Intenta de nuevo."
+            if "AI service returned no assistant message" in msg:
+                return "🤖 El servicio de IA no pudo procesar tu solicitud. Intenta de nuevo."
+            if "AI service error:" in msg:
+                # Extract the inner error detail
+                idx = msg.index("AI service error:")
+                detail = msg[idx + len("AI service error:"):].strip()
+                return f"🔴 Error del servicio de IA: {detail}"
+            # Generic 502
+            return f"🔴 Error del servicio de IA (HTTP 502). Intenta de nuevo."
+        # Fallback for unexpected status codes
+        return f"❌ Error inesperado ({self.status_code}). Intenta de nuevo."
+
 
 class AIService:
+    # Fallback model chain — tried in order on failure.
+    # All models must be free-tier opencode models available via `opencode models`.
+    _MODELS: list[str] = [
+        "opencode/mimo-v2.6-flash-free",            # 1. Smartest — Xiaomi flagship, 1M ctx, multimodal
+        "opencode/nemotron-3-ultra-free",           # 2. Big brain — NVIDIA 550B params
+        "opencode/muse-spark-1.3-contributor-free", # 3. Proven — Meta, 35T tokens, #4 on OpenCode
+        "opencode/nemotron-3.5-lightning-free",     # 4. Fast executor — NVIDIA MoE, reasoning 100/100
+        "opencode/ling-3.0-flash-fin-free",         # 5. Solid reasoning — InclusionAI, 262K ctx
+        "opencode/muse-spark-1.2-contributor-free", # 6. Older Meta — still capable
+        "opencode/big-pickle",                      # 7. Dumbest — stealth model, last resort
+    ]
+
     def __init__(self):
         self.timeout = 300.0  # 5 minutes — covers generate + review + fix stages
-        self.max_retries = 2
-        self.base_delay = 1.0
+        self._last_ok_model: str | None = None  # tracks which model last succeeded
 
     # ── public ──────────────────────────────────────────────
 
@@ -115,7 +158,7 @@ class AIService:
                 '"ruso":[{"id":1,"category":"meaning","question":"...","options":["A","B","C","D"],"correct":0}]}\n'
                 "Nota: 'ru_title' (traducción al ruso de la pregunta) SOLO aplica a los quizzes de 'espanol'."
             )
-            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt)
+            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt, model=self._last_ok_model)
             result = self._try_parse_structured_response(raw2)
 
             if result is None:
@@ -308,7 +351,7 @@ class AIService:
                 "sin texto adicional, sin markdown, sin ```:\n"
                 '{"id":1,"question":"...","options":["A","B","C","D"],"correct":0}'
             )
-            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt)
+            raw2 = await self._call_api_with_fix_prompt(user, fix_prompt, model=self._last_ok_model)
             quiz = self._try_parse_single_quiz(raw2)
 
             if quiz is None:
@@ -379,37 +422,71 @@ class AIService:
 
     # ── API calls ───────────────────────────────────────────
 
+    _PERMANENT_ERROR_NAMES = frozenset({
+        "AuthenticationError", "PermissionDeniedError",
+        "InvalidRequestError", "BadRequestError",
+        "NotFoundError", "UnprocessableEntityError",
+    })
+
     async def _call_api_with_retry(self, user_prompt: str, agent: str = "quiz-generator") -> str:
+        """Try each model in _MODELS until one succeeds.
+
+        Each model gets one attempt. If it fails with a transient error,
+        we move to the next model. Permanent errors stop the chain immediately.
+        """
         last_exception = None
-        for attempt in range(self.max_retries + 1):
+        for attempt, model in enumerate(self._MODELS):
+            logger.info(
+                "[opencode] Attempt %d/%d — model=%s, agent=%s",
+                attempt + 1, len(self._MODELS), model, agent,
+            )
             try:
-                if attempt > 0:
-                    logger.info("[opencode] Retry attempt %d/%d — agent=%s", attempt, self.max_retries, agent)
-                return await self._call_api(user_prompt, agent)
+                result = await self._call_api(user_prompt, agent, model=model)
+                self._last_ok_model = model
+                return result
             except AIServiceError as e:
                 last_exception = e
-                # Retry on transient CLI failures (502) and timeouts (504)
-                if e.status_code in (502, 504) and attempt < self.max_retries:
-                    delay = self.base_delay * (2 ** attempt)
-                    logger.warning("[opencode] CLI error (HTTP %d: %s), retrying in %ss (%d/%d)",
-                                   e.status_code, e, delay, attempt + 1, self.max_retries)
-                    await asyncio.sleep(delay)
-                    continue
-                raise
+                logger.warning(
+                    "[opencode] Model %s failed (HTTP %d): %s",
+                    model, e.status_code, e,
+                )
+                if not self._is_transient_error(e):
+                    logger.error(
+                        "[opencode] Permanent error on model %s — stopping fallback chain",
+                        model,
+                    )
+                    raise
+                # Transient: try next model
+                continue
             except asyncio.TimeoutError as e:
                 last_exception = e
-                if attempt < self.max_retries:
-                    delay = self.base_delay * (2 ** attempt)
-                    logger.warning("[opencode] Timeout (retrying in %ss %d/%d)",
-                                   delay, attempt + 1, self.max_retries)
-                    await asyncio.sleep(delay)
-                    continue
-                raise
+                logger.warning("[opencode] Model %s timed out, trying next model", model)
+                continue
+        # All models exhausted
+        logger.error(
+            "[opencode] All %d models failed — last error: %s",
+            len(self._MODELS), last_exception,
+        )
         if last_exception:
             raise last_exception
-        raise AIServiceError("AI service failed after retries", category="EXTERNAL", status_code=502)
+        raise AIServiceError("AI service failed — all models exhausted", category="EXTERNAL", status_code=502)
 
-    async def _call_api(self, user_prompt: str, agent: str = "quiz-generator") -> str:
+    def _is_transient_error(self, e: AIServiceError) -> bool:
+        """Decide if an AIServiceError is transient (worth retrying)."""
+        # Timeouts are always transient
+        if e.status_code == 504:
+            return True
+        # For 502 errors, inspect the error name from the API response
+        if e.status_code == 502:
+            msg = str(e)
+            for name in self._PERMANENT_ERROR_NAMES:
+                if name in msg:
+                    return False
+            # UnknownError, server errors, network issues → transient
+            return True
+        return False
+
+    async def _call_api(self, user_prompt: str, agent: str = "quiz-generator", model: str | None = None) -> str:
         """Call the opencode CLI, embedding agent instructions in the prompt."""
         import subprocess
 
@@ -429,8 +506,10 @@ class AIService:
         full_prompt = f"{instructions}\n\n---\n\n{user_prompt}" if instructions else user_prompt
         opencode_bin = self._resolve_opencode_bin()
         cmd = [opencode_bin, "run", full_prompt, "--format", "json"]
+        if model:
+            cmd.extend(["--model", model])
 
-        logger.info("[opencode] CLI call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
+        logger.info("[opencode] CLI call started — model=%s, agent=%s, prompt=%d chars", model or "(config)", agent, len(full_prompt))
         t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -464,14 +543,23 @@ class AIService:
         elapsed = time.monotonic() - t0
 
         if proc.returncode != 0:
-            logger.error("[opencode] CLI failed (exit %d) after %.1fs: %s", proc.returncode, elapsed, stderr[:200])
+            api_error = self._extract_error_from_events(stdout)
+            detail = api_error or stderr[:200] or "no details"
+            logger.error(
+                "[opencode] CLI failed (exit %d) after %.1fs\n"
+                "  stderr: %s\n"
+                "  stdout error: %s\n"
+                "  full stdout (first 500): %s",
+                proc.returncode, elapsed, stderr[:300] or "(empty)", api_error or "(none)", stdout[:500],
+            )
             raise AIServiceError(
-                f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
+                f"AI service CLI error (exit {proc.returncode}): {detail}",
                 category="EXTERNAL",
                 status_code=502,
             )
 
         if not stdout:
+            logger.error("[opencode] CLI returned empty stdout after %.1fs (exit 0)", elapsed)
             raise AIServiceError(
                 "AI service returned empty response",
                 category="EXTERNAL",
@@ -479,10 +567,15 @@ class AIService:
             )
 
         # Parse JSON event stream — look for the final text event
+        # May raise AIServiceError if an error event is found with no text
         assistant_content = self._extract_text_from_events(stdout)
 
         if not assistant_content:
-            logger.error("No assistant message found in CLI output: %s", stdout[:500])
+            logger.error(
+                "[opencode] No assistant message in CLI output after %.1fs\n"
+                "  full stdout (first 500): %s",
+                elapsed, stdout[:500],
+            )
             raise AIServiceError(
                 "AI service returned no assistant message",
                 category="EXTERNAL",
@@ -492,8 +585,8 @@ class AIService:
         logger.info("[opencode] CLI call completed — %d chars, %.1fs", len(assistant_content), elapsed)
         return assistant_content
 
-    async def _call_api_with_fix_prompt(self, original_prompt: str, fix_prompt: str, agent: str = "quiz-generator") -> str:
-        """Call CLI with feedback prompt, continuing the same session."""
+    async def _call_api_with_fix_prompt(self, original_prompt: str, fix_prompt: str, agent: str = "quiz-generator", model: str | None = None) -> str:
+        """Call CLI with feedback prompt, starting a fresh session."""
         import subprocess
 
         # Build environment with optional proxy
@@ -511,9 +604,11 @@ class AIService:
         instructions = self._load_agent_instructions(agent)
         full_prompt = f"{instructions}\n\n---\n\n{fix_prompt}" if instructions else fix_prompt
         opencode_bin = self._resolve_opencode_bin()
-        cmd = [opencode_bin, "run", full_prompt, "--format", "json", "--continue"]
+        cmd = [opencode_bin, "run", full_prompt, "--format", "json"]
+        if model:
+            cmd.extend(["--model", model])
 
-        logger.info("[opencode] Fix call started — agent=%s, prompt=%d chars", agent, len(full_prompt))
+        logger.info("[opencode] Fix call started — model=%s, agent=%s, prompt=%d chars", model or "(config)", agent, len(full_prompt))
         t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -547,14 +642,23 @@ class AIService:
         elapsed = time.monotonic() - t0
 
         if proc.returncode != 0:
-            logger.error("[opencode] Fix call failed (exit %d) after %.1fs: %s", proc.returncode, elapsed, stderr[:200])
+            api_error = self._extract_error_from_events(stdout)
+            detail = api_error or stderr[:200] or "no details"
+            logger.error(
+                "[opencode] Fix call failed (exit %d) after %.1fs\n"
+                "  stderr: %s\n"
+                "  stdout error: %s\n"
+                "  full stdout (first 500): %s",
+                proc.returncode, elapsed, stderr[:300] or "(empty)", api_error or "(none)", stdout[:500],
+            )
             raise AIServiceError(
-                f"AI service CLI error (exit {proc.returncode}): {stderr[:200]}",
+                f"AI service CLI error (exit {proc.returncode}): {detail}",
                 category="EXTERNAL",
                 status_code=502,
             )
 
         if not stdout:
+            logger.error("[opencode] Fix call returned empty stdout after %.1fs (exit 0)", elapsed)
             raise AIServiceError(
                 "AI service returned empty response",
                 category="EXTERNAL",
@@ -562,10 +666,15 @@ class AIService:
             )
 
         # Parse JSON event stream — look for the final text event
+        # May raise AIServiceError if an error event is found with no text
         assistant_content = self._extract_text_from_events(stdout)
 
         if not assistant_content:
-            logger.error("No assistant message found in CLI output: %s", stdout[:500])
+            logger.error(
+                "[opencode] No assistant message in fix call output after %.1fs\n"
+                "  full stdout (first 500): %s",
+                elapsed, stdout[:500],
+            )
             raise AIServiceError(
                 "AI service returned no assistant message",
                 category="EXTERNAL",
@@ -658,14 +767,42 @@ class AIService:
     # ── event stream parsing ────────────────────────────────
 
     @staticmethod
+    def _extract_error_from_events(stdout: str) -> str | None:
+        """Extract error message from opencode JSONL error events.
+
+        opencode run --format json emits error events like:
+            {"type":"error","error":{"name":"UnknownError","data":{"message":"..."}}}
+        Returns a formatted "Name: message" string, or None.
+        """
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "error":
+                err = event.get("error", {})
+                name = err.get("name", "UnknownError")
+                data = err.get("data", {})
+                message = data.get("message", "No details")
+                ref = data.get("ref", "")
+                ref_str = f" (ref: {ref})" if ref else ""
+                return f"{name}: {message}{ref_str}"
+        return None
+
+    @staticmethod
     def _extract_text_from_events(stdout: str) -> str | None:
         """Extract assistant text from opencode JSONL event stream.
 
         opencode run --format json emits events like:
             {"type":"text","part":{"type":"text","text":"hello"}}
+        Raises AIServiceError if an error event is found with no text events.
         Returns the concatenated text from all text events, or None.
         """
         parts: list[str] = []
+        error_events: list[str] = []
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
@@ -680,8 +817,24 @@ class AIService:
                 text = part.get("text", "")
                 if text and isinstance(text, str) and text.strip():
                     parts.append(text.strip())
+            elif event.get("type") == "error":
+                err = event.get("error", {})
+                name = err.get("name", "UnknownError")
+                data = err.get("data", {})
+                message = data.get("message", "No details")
+                ref = data.get("ref", "")
+                ref_str = f" (ref: {ref})" if ref else ""
+                error_events.append(f"{name}: {message}{ref_str}")
 
-        return "\n".join(parts) if parts else None
+        if parts:
+            return "\n".join(parts)
+        if error_events:
+            raise AIServiceError(
+                f"AI service error: {'; '.join(error_events)}",
+                category="EXTERNAL",
+                status_code=502,
+            )
+        return None
 
     # ── user prompt builders ─────────────────────────────────
 

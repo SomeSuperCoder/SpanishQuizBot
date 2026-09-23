@@ -1,7 +1,6 @@
 ---
 description: Revisa y corrige quizzes de español para estudiantes rusohablantes
 mode: primary
-model: nemotron-3.5-lightning-free
 permission:
   edit: deny
   bash: deny

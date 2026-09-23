@@ -355,9 +355,10 @@ async def _generate_and_preview(callback_query: CallbackQuery, state: FSMContext
             topic, counts_es, counts_ru, level, dialect, examples=examples
         )
     except AIServiceError as e:
+        logger.error("[survey] Quiz generation failed: %s", e, exc_info=True)
         await _dismiss_thinking(bot, chat_id, 1)
         await callback_query.message.edit_text(
-            f"❌ {e}\n\nIntenta de nuevo.",
+            f"{e.friendly_message()}\n\nIntenta de nuevo.",
             reply_markup=get_start_keyboard(),
         )
         await state.clear()
@@ -1489,9 +1490,10 @@ async def handle_improvement(message: Message, state: FSMContext):
     try:
         edited_quiz = await ai.edit_quiz(topic, history, editing_id, feedback)
     except AIServiceError as e:
+        logger.error("[survey] Quiz edit failed: %s", e, exc_info=True)
         await _dismiss_thinking(message.bot, message.chat.id, 4)
         await message.answer(
-            f"❌ {e}\n\nVuelve a intentar.",
+            f"{e.friendly_message()}\n\nVuelve a intentar.",
             reply_markup=get_edit_selector_keyboard(len(quizzes)),
         )
         await state.set_state(SurveyCreation.reviewing)
